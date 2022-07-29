@@ -20,14 +20,85 @@
 
 //#define REGINA_REXX 1
 
-//--------------- Version -----------------------------------------
-typedef long double LNUM_TYPE;
 
+typedef long double LNUM_TYPE;
+typedef union __attribute((packed)) {
+  LNUM_TYPE dval;			  /* its value if a real */
+  char    *sval;				/* its value if a string (malloc'ed) */
+  int16_t  ival;	        /* its value if an int */
+	} LVARIABLEDATA;
+
+typedef struct __attribute((packed)) {
+  LVARIABLEDATA d;               /* data in variable */
+  char id[IDLENGTH];				/* id of variable */
+//#warning fatto IDLEN a 31 e type uint8 !
+  enum DATATYPE  /*ALIGNMENT in alloc dinamica! */   type;		    /* its type, STRID or FLTID or INTID */
+	// unsigned int * fixed_address??
+	} LVARIABLE;
+STATIC_ASSERT(!(sizeof(LVARIABLE) % 4),0);
+
+typedef struct __attribute((packed)) {
+  char *sval;                   /* its value if a string (malloc'ed) */
+  char id[IDLENGTH];				/* id of variable */
+  uint8_t filler;           // alignment..
+	} VARIABLESTRING;
+    
+typedef union __attribute((packed)) {
+  char        **str;	        /* pointer to string data */
+  LNUM_TYPE     *dval;	        /* pointer to real data */
+  int16_t      *ival;	        /* pointer to int data */
+	} LDIMVARPTR;
+
+typedef struct __attribute((packed)) {
+  char id[IDLENGTH];			/* id of dimensioned variable */
+  enum DATATYPE type;					/* its type, STRID or FLTID (or INTID)*/
+  uint32_t /*uint8_t  ALIGNMENT in alloc dinamica! */  ndims;			/* number of dimensions */
+  DIM_SIZE dim[MAXDIMS];			/* dimensions in x y order */
+  LDIMVARPTR     d;              /* pointers to string/real data */
+	} LDIMVAR;
+
+typedef struct __attribute((packed)) {
+  char id[IDLENGTH];			/* id of dimensioned variable */
+  uint8_t  ndims;			/* number of dimensions */
+  DIM_SIZE dim[MAXDIMS];			/* dimensions in x y order */
+  LDIMVARPTR     d;              /* pointers to string/real data */
+  char **str;                   /* its value if a string (malloc'ed) */
+	} LDIMVARSTRING;
+
+typedef union __attribute((packed)) {
+  char        **sval;			/* pointer to string data */
+  LNUM_TYPE     *dval;		    /* pointer to real data */
+  int16_t      *ival;	        /* pointer to int data */
+	} LLVALUEDATA;
+
+typedef struct __attribute((packed)) {
+  LLVALUEDATA    d;              /* data pointed to by LVALUE */
+  uint8_t type;			/* type of variable (STRID or FLTID or INTID or B_ERROR) */   
+	} LLVALUE;
+
+typedef struct __attribute((packed)) {
+  char id[IDLENGTH];			/* id of control variable */
+  uint8_t parentBlock;
+  LINE_NUMBER_TYPE nextline;	/* line below DO to which control passes */
+  LNUM_TYPE toval;			/* terminal value */
+  LNUM_TYPE step;			/* step size */
+  const char *expr;
+	} BLOCK_DESCRIPTOR;
+
+typedef struct __attribute((packed)) {
+  const char *args;
+  LINE_NUMBER_TYPE returnline;	/* line after CALL/() */
+	} PROC_DESCRIPTOR;
+
+typedef struct __attribute((packed)) _STACK_QUEUE {
+  const char *string;
+  struct _STACK_QUEUE *next;
+  } STACK_QUEUE;
 
 typedef struct __attribute((packed)) _KOMMISSARREXX {
   //OCCHIO ALLINEAMENTI!
-  LINE_NUMBER_TYPE gosubStack[MAXGOSUB];		// GOSUB stack
-  FORLOOP doStack[MAXFORS];		// DO stack - qua usiamo FOR :)
+  PROC_DESCRIPTOR gosubStack[MAXGOSUB];		// GOSUB stack
+  BLOCK_DESCRIPTOR doStack[MAXFORS];		// DO stack - qua usiamo FOR :)
   uint8_t ngosubs;
   uint8_t ndos;
   uint8_t inBlock;
@@ -37,7 +108,7 @@ typedef struct __attribute((packed)) _KOMMISSARREXX {
   uint8_t filler;
 
   VARIABLESTRING *variables;			// the script's variables
-  DIMVARSTRING *dimVariables;		// dimensioned arrays
+  LDIMVARSTRING *dimVariables;		// dimensioned arrays
   LINE *lines;					// list of line starts
 
   uint16_t nvariables;				// number of variables
@@ -47,6 +118,7 @@ typedef struct __attribute((packed)) _KOMMISSARREXX {
 
   
   const char *string;        // string we are parsing
+  STACK_QUEUE *stack;
 
   HWND hWnd;
   THREAD *threadID;
@@ -56,7 +128,7 @@ typedef struct __attribute((packed)) _KOMMISSARREXX {
   uint8_t incomingChar[2];
   
   struct __attribute((packed)) EVENT_HANDLER errorHandler;
-  uint8_t filler2;
+  uint8_t traceLevel;
   
   COLORREF Color,ColorBK;
   POINT Cursor;
