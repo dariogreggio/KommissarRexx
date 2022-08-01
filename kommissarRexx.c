@@ -7,6 +7,8 @@
 *                           22/7/2022  
 *
  * la EmptyString potrebbe non servire più qua...
+ * uno statement (tipo = al posto di ==) in IF o WHEN schianta
+ * 
 *****************************************************************/
 
 
@@ -37,7 +39,7 @@
 #include "superfile.h"
 
 extern APP_DATA appData;
-#define KOMMISSARREXX_COPYRIGHT_STRING "KommissarRexx for PIC32MZ v0.1.2 - 29/7/2022\n"
+#define KOMMISSARREXX_COPYRIGHT_STRING "KommissarRexx for PIC32MZ v0.1.4 - 1/8/2022\n"
 extern const char _PC_PIC_CPU_C[];
 extern const char _PC_PIC_COMMAND_C[];
 
@@ -308,8 +310,8 @@ static const char * const error_msgs[] = {
 	"Too many initialisers",
 	"Illegal type",
 	"Too many nested DO",
-	"DO without matching LOOP",    //10
-	"LOOP without matching DO",
+	"DO without matching END",    //10
+	"END without matching DO",
 	"Divide by zero",
 	"Negative logarithm",
 	"Negative square root",
@@ -332,7 +334,7 @@ static const char * const error_msgs[] = {
 
 
 static const char * const EmptyString="";
-static uint8_t digitSize=32+1;   // v.DIGITS
+static uint8_t digitSize=32;   // v.DIGITS
 static uint8_t digitSizeDecimal=6;   // v.DIGITS
 // METTERE in instance!
 static uint8_t digitFuzz=0,digitForm=0;
@@ -506,8 +508,9 @@ BSTATIC void reportError(KOMMISSARREXX *,LINE_NUMBER_TYPE lineno);
 BSTATIC int16_t findLine(KOMMISSARREXX *,LINE_NUMBER_TYPE no);
 BSTATIC int16_t findProcedure(KOMMISSARREXX *mInstance,const char *name);
 BSTATIC int16_t findBlockEnd(KOMMISSARREXX *mInstance,uint8_t level);
+BSTATIC int8_t gotoBlockEnd(KOMMISSARREXX *mInstance,uint8_t level);
 
-BSTATIC VARIABLESTRING *addNewVar(KOMMISSARREXX *mInstance,const char *id);
+BSTATIC VARIABLESTRING *addNewVar(KOMMISSARREXX *mInstance,const char *id,void *parent);
 int16_t to_int(const char *);
 LNUM_TYPE to_num(const char *);
 char *to_string(LNUM_TYPE,char *);
@@ -519,17 +522,16 @@ BSTATIC void doSay(KOMMISSARREXX *);
 BSTATIC BYTE get_args(const char *args,BYTE w,char *ret);
 BSTATIC void doArg(KOMMISSARREXX *);
 BSTATIC void doParse(KOMMISSARREXX *);
-BSTATIC void doProcedure(KOMMISSARREXX *);
 BSTATIC void doLet(KOMMISSARREXX *);
-BSTATIC BYTE deleteVariable(KOMMISSARREXX *,const char *);
+BSTATIC BYTE deleteVariable(KOMMISSARREXX *,const char *,void *);
 BSTATIC void doDrop(KOMMISSARREXX *);
 BSTATIC void doDim(KOMMISSARREXX *);
-BSTATIC LINE_NUMBER_TYPE doIf(KOMMISSARREXX *);
+BSTATIC int8_t doIf(KOMMISSARREXX *,uint8_t *);
 BSTATIC LINE_NUMBER_TYPE doCall(KOMMISSARREXX *);
 BSTATIC LINE_NUMBER_TYPE doReturn(KOMMISSARREXX *);
 BSTATIC void doSelect(KOMMISSARREXX *);
-BSTATIC LINE_NUMBER_TYPE doWhen(KOMMISSARREXX *);
-BSTATIC LINE_NUMBER_TYPE doOtherwise(KOMMISSARREXX *);
+BSTATIC int8_t doWhen(KOMMISSARREXX *,uint8_t *);
+BSTATIC int8_t doOtherwise(KOMMISSARREXX *,uint8_t *);
 BSTATIC LINE_NUMBER_TYPE doSignal(KOMMISSARREXX *);
 BSTATIC void doInterpret(KOMMISSARREXX *);
 BSTATIC void doAddress(KOMMISSARREXX *);
@@ -586,12 +588,12 @@ BSTATIC int16_t ivariable(KOMMISSARREXX *);
 BSTATIC LNUM_TYPE dimVariable(KOMMISSARREXX *);
 
 
-BSTATIC VARIABLESTRING *findVariable(KOMMISSARREXX *,const char *id);
-BSTATIC LDIMVARSTRING *findDimVar(KOMMISSARREXX *,const char *id);
-BSTATIC LDIMVARSTRING *dimension(KOMMISSARREXX *,const char *id, int ndims, ...);
+BSTATIC VARIABLESTRING *findVariable(KOMMISSARREXX *,const char *id,void *parent,BYTE private);
+BSTATIC LDIMVARSTRING *findDimVar(KOMMISSARREXX *,const char *id,void *parent,BYTE private);
+BSTATIC LDIMVARSTRING *dimension(KOMMISSARREXX *,const char *id, BYTE ndims, ...);
 BSTATIC void *getDimVar(KOMMISSARREXX *,LDIMVARSTRING *dv, ...);
-BSTATIC VARIABLESTRING *addVar(KOMMISSARREXX *,const char *id);
-BSTATIC LDIMVARSTRING *addDimVar(KOMMISSARREXX *,const char *id);
+BSTATIC VARIABLESTRING *addVar(KOMMISSARREXX *,const char *id,void *parent);
+BSTATIC LDIMVARSTRING *addDimVar(KOMMISSARREXX *,const char *id,void *parent);
 
 enum DATATYPE datatype(const char *);
 signed char isString(TOKEN_NUM);
@@ -721,11 +723,25 @@ int kommissarrexx(KOMMISSARREXX *hInstance,const char *scriptName) {
 #endif
 		*/
 
-  cleanup(hInstance,0);
 
 //------------------------------------------------------------- Send CopyRight Message ----------------------------------------------------------
   hInstance->incomingChar[0]=hInstance->incomingChar[1]=0;
+  hInstance->stack=NULL;
+	hInstance->nfiles=0;
+  hInstance->variables = NULL;
+  hInstance->nvariables = 0;
+  hInstance->dimVariables = NULL;
+  hInstance->ndimVariables = 0;
+
+  hInstance->lines = 0;
+  hInstance->nlines = 0;
+	hInstance->ngosubs=hInstance->ndos=hInstance->inBlock=0;
+  hInstance->curline=0;
   hInstance->errorFlag=0;
+	hInstance->errorHandler.handler=0;
+	hInstance->errorHandler.errorline=0;
+	hInstance->errorHandler.errorcode=0;
+  
 #ifdef USA_BREAKTHROUGH
   HDC hDC;
   GetDC(hInstance->hWnd,&hDC);
@@ -746,7 +762,6 @@ int kommissarrexx(KOMMISSARREXX *hInstance,const char *scriptName) {
 //  myCR(hInstance); /*deve/devono dipendere da xsize.. */
 
   hInstance->traceLevel='O';
-  hInstance->stack=NULL;
   *scriptArgs=0;
 
   keypress.key=keypress.modifier=0;
@@ -988,10 +1003,22 @@ int rexx(KOMMISSARREXX *mInstance,const char *script,const char *args,BYTE where
   int answer = 0;
 
   mInstance->incomingChar[0]=mInstance->incomingChar[1]=0;
-  mInstance->errorFlag=0;
-  
-  mInstance->curline=0;
+  mInstance->stack=NULL;
+	mInstance->nfiles=0;
+  mInstance->variables = NULL;
+  mInstance->nvariables = 0;
+  mInstance->dimVariables = 0;
+  mInstance->ndimVariables = 0;
 
+  mInstance->lines = 0;
+  mInstance->nlines = 0;
+	mInstance->ngosubs=mInstance->ndos=mInstance->inBlock=0;
+  mInstance->curline=0;
+  mInstance->errorFlag=0;
+	mInstance->errorHandler.handler=0;
+	mInstance->errorHandler.errorline=0;
+	mInstance->errorHandler.errorcode=0;
+  
   mInstance->ColorPaletteBK=textColors[0] /*BLACK*/;
   mInstance->ColorBK=ColorRGB(mInstance->ColorPaletteBK);
 	mInstance->ColorPalette=textColors[7] /*WHITE*/;
@@ -1029,9 +1056,15 @@ int rexx(KOMMISSARREXX *mInstance,const char *script,const char *args,BYTE where
 		mInstance->token = getToken(mInstance->string);
     switch(mInstance->traceLevel) {
       case 'A':
+      case 'C':
       case 'I':   // aggiungere..
-        err_puts(mInstance->string);
+      {
+        const char *p=mInstance->string;
+        while(*p && *p!='\n')
+          err_printf("%c",*p++);    // si potrebbero evitare i commenti?
+        err_printf("\r\n");
         err_printf("--%u\r\n",mInstance->inBlock);
+      }
         break;
       case '?':
         inputKey();
@@ -1166,7 +1199,7 @@ int setup(KOMMISSARREXX *mInstance,const char *script) {
 		script = (char *)strchr((char *)script,'\n') +1;
   	}
   if(!mInstance->nlines) {
-    myTextOut(mInstance,"Can't read program");
+    myTextOut(mInstance,"Can't read script");
     myCR(mInstance);
     free(mInstance->lines);
 		return -1;
@@ -1211,10 +1244,22 @@ void cleanup(KOMMISSARREXX *mInstance,uint8_t alsoprogram) {
   int i;
   int ii;
   int size;
+  STACK_QUEUE *q,*q1;
+
+  if(mInstance->stack) {
+    q=mInstance->stack;
+    while(q) {
+      q1=q;
+      q=q1->next;
+      free(q1);
+      }
+    }
+  mInstance->stack=NULL;
 
 	for(i=0; i<mInstance->nfiles; i++) {
     subClose(mInstance,i);
     }
+  mInstance->nfiles=0;
   
   for(i=0; i<mInstance->nvariables; i++) {
 		if(mInstance->variables[i].sval)
@@ -1243,9 +1288,8 @@ void cleanup(KOMMISSARREXX *mInstance,uint8_t alsoprogram) {
 
   if(mInstance->dimVariables)
 		free(mInstance->dimVariables);
-  mInstance->dimVariables=0;
  
-  mInstance->dimVariables = 0;
+  mInstance->dimVariables = NULL;
   mInstance->ndimVariables = 0;
 
 	if(alsoprogram) {
@@ -1255,9 +1299,14 @@ void cleanup(KOMMISSARREXX *mInstance,uint8_t alsoprogram) {
   	mInstance->nlines = 0;
 		}
 
-	mInstance->ngosubs=0;
-	mInstance->ndos=0;
-	mInstance->inBlock=0;
+  for(i=0; i<mInstance->ngosubs; i++) {
+    if(mInstance->gosubStack[i].args)
+      free((void*)mInstance->gosubStack[i].args);
+    }
+      
+	mInstance->ngosubs=mInstance->ndos=mInstance->inBlock=0;
+  
+  mInstance->curline=0;
 
 	mInstance->errorHandler.handler=0;
 	mInstance->errorHandler.errorline=0;
@@ -1339,24 +1388,60 @@ int16_t findBlockEnd(KOMMISSARREXX *mInstance,uint8_t level) {
   for(i=mInstance->curline+1; i<mInstance->nlines; i++) {
     do {
       t=getToken(mInstance->string);
+      match(mInstance,t);
       switch(t) {
         case DO:
           myblock++;
           break;
         case END:
-          myblock--;
           if(myblock == level) {
             return i;
             }
+          myblock--;
           break;
         }
       } while(t!=EOL && t!=EOS);
   	}
+  return -1;
+	}
+  
+int8_t gotoBlockEnd(KOMMISSARREXX *mInstance,uint8_t level) {
+  int i;
+  const char *p;
+  TOKEN_NUM t;
+  uint8_t myblock=mInstance->inBlock;
+
+  match(mInstance,mInstance->token);
+  mInstance->curline++;
+  while(mInstance->curline < mInstance->nlines) {
+    mInstance->string=mInstance->lines[mInstance->curline].str;
+    do {
+      t=getToken(mInstance->string);
+      match(mInstance,t);
+      switch(t) {
+        case DO:
+          myblock++;
+          break;
+        case END:
+          if(myblock == level) {
+//            match(mInstance,mInstance->token);    // mangio EOL...
+//            mInstance->curline++;
+            return 1;
+            }
+          myblock--;
+          break;
+        }
+      } while(t!=EOL && t!=EOS);
+    mInstance->curline++;
+  	}
+  return 0;
 	}
   
 LINE_NUMBER_TYPE line(KOMMISSARREXX *mInstance) {
   LINE_NUMBER_TYPE answer;
   const char *str;
+  TOKEN_NUM t;
+  int8_t skipDo=0;
 
 rifo:
 	answer = 0;
@@ -1374,12 +1459,88 @@ rifo:
 		  doDrop(mInstance);
 		  break;
 		case IF:
-		  answer = doIf(mInstance);
-			if((int16_t)answer < 0)			// OCCHIO! unsigned 
-				goto rifo;
+      {
+      const char *oldPos;
+			if(doIf(mInstance,&skipDo)) {  // potrei anche chiamare line() ricorsiva, ma...
+        if(!skipDo)
+          goto rifo;
+        else
+          answer=mInstance->curline;
+        }
+      else {
+        do {
+          oldPos=mInstance->string;
+          t=getToken(mInstance->string);
+          match(mInstance,t);  
+          } while(t != ELSE && t != COMMA && t != EOS && t != EOL); // v.rem
+        if(t == ELSE)
+          goto rifo;
+        else {
+          if(getToken(mInstance->string) == ELSE) {
+            if(t == EOL)
+              mInstance->curline++;   // ma occhio a COMMA... in caso
+            match(mInstance,ELSE);
+            if(mInstance->token == DO) {
+              match(mInstance,DO);
+              mInstance->ndos++;
+              mInstance->inBlock++;
+              match(mInstance,mInstance->token);    // dovrebbe essere EOS o EOL o al limite comma...
+              mInstance->curline=getNextStatement(mInstance,mInstance->string); // questo POTREBBE non servire... se da line() restituisco 0
+              }
+            goto rifo;
+            }
+          else {
+            mInstance->string=oldPos;
+        		mInstance->token = getToken(mInstance->string);
+            }
+          }
+        }
+      }
 		  break;
+		case ELSE:			// (defaults to here, i.e. when a IF statement is TRUE)
+      {
+do_else:
+      match(mInstance,ELSE);
+      if(mInstance->token == DO) {
+        match(mInstance,DO);
+        mInstance->ndos++;
+        mInstance->inBlock++;
+        gotoBlockEnd(mInstance,mInstance->inBlock);
+        mInstance->ndos--;
+        mInstance->inBlock--;
+        }
+		  return 0;
+/*      do {
+        t=getToken(mInstance->string);
+        match(mInstance,t);  
+        } while(t != COMMA && t != EOS && t != EOL); // v.rem*/
+      }
+      break;
+
 		case END:
 			answer = doEnd(mInstance);
+#if 0
+      if(mInstance->token == ELSE) {
+        match(mInstance,ELSE);
+        if(mInstance->token == DO) {
+          match(mInstance,DO);
+          mInstance->ndos++;
+          mInstance->inBlock++;
+          gotoBlockEnd(mInstance,mInstance->inBlock);
+          mInstance->ndos--;
+          mInstance->inBlock--;
+          }
+        else {
+          return 0;   // v. else e rem
+#endif
+#if 0
+          do {
+            t=getToken(mInstance->string);
+            match(mInstance,t);   // v.rem
+            } while(/*t != COMMA &&*/  t != EOS && t != EOL);
+#endif
+//          }
+//        }
 		  break;
 		case ADDRESS:
 			doAddress(mInstance);
@@ -1397,9 +1558,6 @@ rifo:
 		case SIGNAL:
 			answer = doSignal(mInstance);
 			break;
-		case PROCEDURE:
-			doProcedure(mInstance);
-			break;
 		case RETURN:
 			answer = doReturn(mInstance);
 			break;
@@ -1407,10 +1565,45 @@ rifo:
 		  doSelect(mInstance);
 		  break;
 		case WHEN:
-		  answer = doWhen(mInstance);
+      {
+      const char *oldPos;
+			if(doWhen(mInstance,&skipDo)) {
+        if(!skipDo)
+          goto rifo;
+        else
+          answer=mInstance->curline;
+        }
+      else {
+        do {
+          oldPos=mInstance->string;
+          t=getToken(mInstance->string);
+          match(mInstance,t);  
+          } while(t != COMMA && t != EOS && t != EOL);
+        }
+
+      mInstance->string=oldPos;
+      mInstance->token = getToken(mInstance->string);
+      }
 		  break;
 		case OTHERWISE:
-		  answer = doOtherwise(mInstance);
+      {
+      const char *oldPos;
+			if(doOtherwise(mInstance,&skipDo)) {
+        if(!skipDo)
+          goto rifo;
+        else
+          answer=mInstance->curline;
+        }
+      else {
+        do {
+          oldPos=mInstance->string;
+          t=getToken(mInstance->string);
+          match(mInstance,t);  
+          } while(t != COMMA && t != EOS && t != EOL);
+        }
+      mInstance->string=oldPos;
+      mInstance->token = getToken(mInstance->string);
+      }
 		  break;
 		case EXIT:
       doExit(mInstance);
@@ -1430,13 +1623,9 @@ rifo:
 		  doPull(mInstance);
 		  break;
       
-		case ELSE:			// defaults to here, i.e. when a IF statement is TRUE
-do_else:
-      break;
 		case REM:
-do_rem:
 		  doRem(mInstance);
-		  return 0;
+		  goto rifo;
 		  break;
 		case COMMA:
       match(mInstance,COMMA);   // in teoria c'è già sotto...
@@ -1481,16 +1670,20 @@ do_rem:
 	  }
 
 	if(!answer) {
-//	  if(mInstance->token==REM)     // qua non dovrebbe accadere...
-//			goto do_rem;
-	  if(mInstance->token == ELSE)
+	  if(mInstance->token == ELSE)    // forse non capita...
 			goto do_else;
+    
+    if(skipDo) {
+      gotoBlockEnd(mInstance,mInstance->inBlock);
+      mInstance->ndos--;
+      mInstance->inBlock--;
+			}
+
 
 	  if(mInstance->token != EOS) {
-
 			str = mInstance->string;
 			while(isspace(*str)) {
-			  if(*str == '\n' || *str == ':')
+			  if(*str == '\n' || *str == ',')
 			    break;
 			  str++;
 				}
@@ -1569,7 +1762,7 @@ void doSay(KOMMISSARREXX *mInstance) {
       case INTID:
         {
         int16_t i;
-        char buf[digitSize];
+        char buf[digitSize+1];
 
         i=to_int(str);
         to_string_i(i,buf);
@@ -1609,7 +1802,7 @@ void doSay(KOMMISSARREXX *mInstance) {
       default:
         {
         long long n;
-        char buf[digitSize];
+        char buf[digitSize+1];
 
         x = to_num(str);
     // if errorFlag NON dovrebbe stampare...
@@ -1735,7 +1928,7 @@ print_cr:
 
 
 void doArg(KOMMISSARREXX *mInstance) {
-  char buf[64];
+  char buf[128];
   BYTE argnum=1;
   char id[IDLENGTH];
   IDENT_LEN len;
@@ -1743,10 +1936,18 @@ void doArg(KOMMISSARREXX *mInstance) {
   LVARIABLE v;
   char *args;
  
-  match(mInstance,ARG);   // ARG funzia solo dentro proc, PARSE ARG ovunque!
+  match(mInstance,ARG);   // ARG funzia solo dentro proc, PARSE ARG ovunque!  NO...
 
-  args=scriptArgs;    // FINIRE con procedura!
-  
+  if(mInstance->ngosubs>0) {
+    if(mInstance->gosubStack[mInstance->ngosubs-1].args) {
+      args=(char *)mInstance->gosubStack[mInstance->ngosubs-1].args;
+      }
+    else
+      args=(char *)EmptyString;
+    }
+  else
+    args=scriptArgs;
+          
 rifo:
   switch(mInstance->token) {
     case DOT:
@@ -1755,25 +1956,30 @@ rifo:
       goto rifo;
       break;
     case STRID:
-    	getId(mInstance, mInstance->string, id, &len);
-      match(mInstance,STRID);
       lvalue(mInstance,&lv);
       get_args(args,argnum,buf);
       strupr(buf);    // qua SEMPRE
-      switch(v.type=datatype(buf)) {
-        case FLTID:
-          v.d.dval=to_num(buf);
-          subAssignVar(mInstance,lv.d.sval,&v);
-          break;
-        case INTID:
-          v.d.ival=to_int(buf);
-          subAssignVar(mInstance,lv.d.sval,&v);
-          break;
-        case STRID:
-          v.d.sval=(char *)buf;
-          subAssignVar(mInstance,lv.d.sval,&v);
-          break;
-        }
+      
+//      if(*buf) {
+        switch(v.type=datatype(buf)) {
+          case FLTID:
+            v.d.dval=to_num(buf);
+            subAssignVar(mInstance,lv.d.sval,&v);
+            break;
+          case INTID:
+            v.d.ival=to_int(buf);
+            subAssignVar(mInstance,lv.d.sval,&v);
+            break;
+          case STRID:
+            v.d.sval=(char *)buf;
+            subAssignVar(mInstance,lv.d.sval,&v);
+            break;
+          }
+//        }
+//      else {
+//        deleteVariable(mInstance,id,NULL);    // direi... o lasciarla vuota??
+//        }
+
       argnum++;
       goto rifo;
       break;
@@ -1809,7 +2015,15 @@ rifo:
       break;
     case ARG:
       match(mInstance,ARG);
-      args=scriptArgs;
+      if(mInstance->ngosubs>0) {
+        if(mInstance->gosubStack[mInstance->ngosubs-1].args) {
+          args=(char *)mInstance->gosubStack[mInstance->ngosubs-1].args;
+          }
+        else
+          args=(char *)EmptyString;
+        }
+      else
+        args=scriptArgs;
       break;
     case LINEIN:
       match(mInstance,LINEIN);
@@ -1839,7 +2053,10 @@ rifo:
       break;
     case VAR:
       match(mInstance,VAR);
-      v1=findVariable(mInstance,id);
+			getId(mInstance,mInstance->string, id, &len);
+			match(mInstance,STRID);
+      v1=findVariable(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
       if(v1) {
         strncpy(buf2,v1->sval,sizeof(buf2)-1);
         buf2[sizeof(buf2)-1]=0;
@@ -1850,8 +2067,8 @@ rifo:
         }
       args=buf2;
       break;
-    case VALUE:
-      match(mInstance,VALUE);
+    case VALUETOK:
+      match(mInstance,VALUETOK);
       str = expr(mInstance);
       if(str) {
         strncpy(buf2,str,sizeof(buf2)-1);
@@ -1881,20 +2098,25 @@ rifo2:
       get_args(args,argnum,buf);
       if(upp)
         strupr(buf);
-      switch(v.type=datatype(buf)) {
-        case FLTID:
-          v.d.dval=to_num(buf);
-          subAssignVar(mInstance,lv.d.sval,&v);
-          break;
-        case INTID:
-          v.d.ival=to_int(buf);
-          subAssignVar(mInstance,lv.d.sval,&v);
-          break;
-        case STRID:
-          v.d.sval=(char *)buf;
-          subAssignVar(mInstance,lv.d.sval,&v);
-          break;
-        }
+//      if(*buf) {
+        switch(v.type=datatype(buf)) {
+          case FLTID:
+            v.d.dval=to_num(buf);
+            subAssignVar(mInstance,lv.d.sval,&v);
+            break;
+          case INTID:
+            v.d.ival=to_int(buf);
+            subAssignVar(mInstance,lv.d.sval,&v);
+            break;
+          case STRID:
+            v.d.sval=(char *)buf;
+            subAssignVar(mInstance,lv.d.sval,&v);
+            break;
+          }
+  //      }
+  //    else {
+  //      deleteVariable(mInstance,id,NULL);    // direi... o lasciarla vuota??
+  //      }
       argnum++;
       goto rifo2;
       break;
@@ -1903,27 +2125,17 @@ rifo2:
     }
   }
   
-void doProcedure(KOMMISSARREXX *mInstance) {
-  
-  match(mInstance,PROCEDURE);
-  
-  }
-
 
 void doSelect(KOMMISSARREXX *mInstance) {
-	TOKEN_NUM t;
-  LINE_NUMBER_TYPE jumpthen;
-  const char *str=NULL;
-  BYTE othFound=0;
-  signed char condition;
 
 	match(mInstance,SELECT);
 
-  if(mInstance->ndos > MAXFORS - 1) {
+  if(mInstance->ndos > MAXFORS-1) {
 		setError(mInstance,ERR_TOOMANYFORS);
 	  }
   else {
-  	mInstance->doStack[mInstance->ndos].step = mInstance->doStack[mInstance->ndos].toval =
+    sprintf(mInstance->doStack[mInstance->ndos].id,"#SEL%%%u",mInstance->curline);
+  	mInstance->doStack[mInstance->ndos].step = mInstance->doStack[mInstance->ndos].toval = 0;
 		mInstance->doStack[mInstance->ndos].nextline = getNextStatement(mInstance,mInstance->string);
     mInstance->doStack[mInstance->ndos].expr=NULL;
 		mInstance->doStack[mInstance->ndos].parentBlock = mInstance->ndos;
@@ -1933,51 +2145,79 @@ void doSelect(KOMMISSARREXX *mInstance) {
 
 	}
 
-LINE_NUMBER_TYPE doWhen(KOMMISSARREXX *mInstance) {
-	TOKEN_NUM t;
-  const char *str=NULL;
-  signed char condition;
-  LINE_NUMBER_TYPE jumpthen;
+int8_t doWhen(KOMMISSARREXX *mInstance,uint8_t *isDo) {
+  int8_t condition;
 
-	match(mInstance,WHEN);
-
-  condition=boolExpr(mInstance);
-      
-  if(condition) {
-    if(mInstance->token != DO) {
-      // per ora lasciamo la modalità "goto"..
-      jumpthen = to_int(expr(mInstance));
-      return jumpthen;
-      }
-    else
-      
-      // findBlockEnd
-
-      return -1;    // dovrebbe forzare esecuzione stmt successivo, v. sopra
+  match(mInstance,WHEN);
+  condition = boolExpr(mInstance);
+ 	if(mInstance->ndos==0) {
+    setError(mInstance,ERR_NOFOR);    // cambiare!!
+    return 0;
     }
-	}
 
-LINE_NUMBER_TYPE doOtherwise(KOMMISSARREXX *mInstance) {
-	TOKEN_NUM t;
-  LINE_NUMBER_TYPE jumpthen;
-  const char *str=NULL;
-  BYTE othFound=0;
-  signed char condition;
-
- 	match(mInstance,OTHERWISE);
-  othFound=1;
-
+	if(condition)
+    mInstance->doStack[mInstance->ndos-1].step = 1;   // marker per WHEN
+  match(mInstance,THEN);
   if(mInstance->token != DO) {
-    // per ora lasciamo la modalità "goto"..
-    jumpthen = to_int(expr(mInstance));
-    return jumpthen;
+    return condition;
     }
-  else
+  else {
+    match(mInstance,DO);
+    mInstance->ndos++;
+    mInstance->inBlock++;
     
-    // findBlockEnd
+    if(condition) {
+      *isDo=1;
+      match(mInstance,mInstance->token);    // dovrebbe essere EOS o EOL o al limite comma...
+      mInstance->curline=getNextStatement(mInstance,mInstance->string); // questo POTREBBE non servire... se da line() restituisco 0
+      // PROVARE
+      }
+    else {
+      *isDo=0;
+      gotoBlockEnd(mInstance,mInstance->inBlock);
+      mInstance->ndos--;
+      mInstance->inBlock--;
+      }
     
-    return -1;    // dovrebbe forzare esecuzione stmt successivo, v. sopra
+    return condition;
+    }
+
 	}
+
+int8_t doOtherwise(KOMMISSARREXX *mInstance,uint8_t *isDo) {
+  int8_t condition;
+
+  match(mInstance,OTHERWISE);
+ 	if(mInstance->ndos==0) {
+    setError(mInstance,ERR_NOFOR);    // cambiare!!
+    return 0;
+    }
+  condition=!mInstance->doStack[mInstance->ndos-1].step;
+	mInstance->doStack[mInstance->ndos-1].toval = 1;   // marker per OTHERWISE
+  if(mInstance->token != DO) {
+    return condition;
+    }
+  else {
+    match(mInstance,DO);
+    mInstance->ndos++;
+    mInstance->inBlock++;
+  
+    if(condition) {
+      *isDo=1;
+      match(mInstance,mInstance->token);    // dovrebbe essere EOS o EOL o al limite comma...
+      mInstance->curline=getNextStatement(mInstance,mInstance->string); // questo POTREBBE non servire... se da line() restituisco 0
+      // PROVARE
+      }
+    else {
+      *isDo=0;
+      gotoBlockEnd(mInstance,mInstance->inBlock);
+      mInstance->ndos--;
+      mInstance->inBlock--;
+      }
+    
+    return condition;
+    }
+  }
 
 
 LINE_NUMBER_TYPE doSignal(KOMMISSARREXX *mInstance) {
@@ -2064,6 +2304,9 @@ void doInterpret(KOMMISSARREXX *mInstance) {
     i = line(&myInstance);
     if(myInstance.errorFlag)
       ;
+    
+//    mInstance->Cursor=myInstance->Cursor;    // volendo... non so voglio!
+
     cleanup(&myInstance,0);
     free(str);
     }
@@ -2082,9 +2325,10 @@ void doAddress(KOMMISSARREXX *mInstance) {
     
     execCmd(str,NULL,NULL /* mettere nome script rexx? */);
     
-    var = findVariable(mInstance,theRC);
+    var = findVariable(mInstance,theRC,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+            mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
 		if(!var)
-			var = addVar(mInstance,theRC);
+			var = addVar(mInstance,theRC,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
     if(!var) {
       setError(mInstance,ERR_OUTOFMEMORY);
       return;
@@ -2182,7 +2426,7 @@ int subLoad(const char *s,char *p) {
   
 
 void subAssignVar(KOMMISSARREXX *mInstance, char **v, LVARIABLE *d) {
-  char buf[digitSize],*p;
+  char buf[digitSize+1],*p;
   
   switch(d->type) {
     case STRID:
@@ -2216,8 +2460,42 @@ void doLet(KOMMISSARREXX *mInstance) {
     case ':':
       match(mInstance,STRID);
       match(mInstance,COLON);
-      if(mInstance->token == PROCEDURE) {
-        match(mInstance,PROCEDURE);
+      if(mInstance->ngosubs>0) {
+        mInstance->gosubStack[mInstance->ngosubs-1].line=mInstance->curline;
+        mInstance->gosubStack[mInstance->ngosubs-1].privateVars=0;
+        }
+      else    // io ci metterei un errore... anche se il doc non lo dice (prog. principale che "cade" in una subroutine)
+        ;
+rifo:
+      switch(mInstance->token) {
+        case PROCEDURE:
+          match(mInstance,PROCEDURE);
+          if(mInstance->ngosubs>0)
+            mInstance->gosubStack[mInstance->ngosubs-1].privateVars=1;
+          else
+            ;
+          goto rifo;
+          break;
+        case EXPOSE:  // senza PROCEDURE tutte globali, con PROC quelle create qua son locali ma non se han lo stesso nome...
+          // quindi boh verificare EXPOSE
+          match(mInstance,EXPOSE);
+rifo2:
+          switch(mInstance->token) {
+            case OPAREN:
+              match(mInstance,OPAREN);      // vedere cosa fanno le parentesi qua...
+              goto rifo2;
+              break;
+            case STRID:
+
+
+              goto rifo2;
+              break;
+            default:
+              break;
+            }
+          break;
+        default:
+          break;
         }
 /*      while(mInstance->token != EOS && mInstance->token != EOL) {
         getToken(mInstance->string);
@@ -2227,6 +2505,7 @@ void doLet(KOMMISSARREXX *mInstance) {
     //eseguire procedure? o comando esterno?? solo se tra apici??
       if(*mInstance->string=='\'' || *mInstance->string=='"') {
         char myBuf[128];
+        
         strncpy(myBuf,mInstance->string+1,127);
         if(p=strchr(myBuf,*mInstance->string))
           *(char *)p=0;
@@ -2235,6 +2514,8 @@ void doLet(KOMMISSARREXX *mInstance) {
         else
           myBuf[127]=0;
         execCmd(myBuf,NULL,NULL /* mettere nome script rexx? */);
+        mInstance->Cursor.x=LOWORD(GetXY());    // per aggiornare pos cursore dopo CLS ecc!
+        mInstance->Cursor.y=HIWORD(GetXY());
         do {
           t=getToken(mInstance->string);
           match(mInstance,t);   // ha senso fare così??
@@ -2272,16 +2553,34 @@ void doLet(KOMMISSARREXX *mInstance) {
     }
 	}
 
-BYTE deleteVariable(KOMMISSARREXX *mInstance,const char *id) {
+BYTE deleteVariable(KOMMISSARREXX *mInstance,const char *id,void *parent) {
   int i,j;
   
   for(i=0; i<mInstance->nvariables; i++) {
-		if(!strcmp(mInstance->variables[i].id, id)) {
+		if(mInstance->variables[i].parent == parent && !stricmp(mInstance->variables[i].id, id)) {
+      goto doDelete;
+      }
+    }
+  for(i=0; i<mInstance->nvariables; i++) {
+		if(!stricmp(mInstance->variables[i].id, id)) {
+doDelete:
       if(mInstance->variables[i].sval)
         free(mInstance->variables[i].sval);
       for(j=i+1; j<mInstance->nvariables; j++,i++) {
         mInstance->variables[i] = mInstance->variables[j];
         }
+
+      switch(mInstance->traceLevel) {
+        case 'A':
+          err_printf("%svariable deleted %s\r\n",parent ? "-" : "",id);    // finire..
+          break;
+        case '?':
+          inputKey();
+          break;
+        default:
+          break;
+        }
+
       mInstance->nvariables--;
       return 1;
       }
@@ -2296,7 +2595,7 @@ void doDrop(KOMMISSARREXX *mInstance) {
 rifo:
   getId(mInstance,mInstance->string, id, &len);
   match(mInstance,STRID);
-  deleteVariable(mInstance,id);
+  deleteVariable(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
   if(mInstance->token == STRID)
     goto rifo;
 	}
@@ -2396,27 +2695,34 @@ void doDim(KOMMISSARREXX *mInstance) {
 	}
 
 
-LINE_NUMBER_TYPE doIf(KOMMISSARREXX *mInstance) {
-  signed char condition;
-  LINE_NUMBER_TYPE jumpthen,jumpelse=0;
+int8_t doIf(KOMMISSARREXX *mInstance,uint8_t *isDo) {
+  int8_t condition;
 
   match(mInstance,IF);
   condition = boolExpr(mInstance);
   match(mInstance,THEN);
   if(mInstance->token != DO) {
-    // per ora lasciamo la modalità "goto"..
-    jumpthen = to_int(expr(mInstance));
-    if(mInstance->token == ELSE) {
-      match(mInstance,ELSE);
-      jumpelse = to_int(expr(mInstance));
-      }
-    return condition ? jumpthen : jumpelse;
+    return condition;
     }
   else {
+    match(mInstance,DO);
+    mInstance->ndos++;
+    mInstance->inBlock++;
+
+    if(condition) {
+      *isDo=1;
+      match(mInstance,mInstance->token);    // dovrebbe essere EOS o EOL o al limite comma...
+      mInstance->curline=getNextStatement(mInstance,mInstance->string); // questo POTREBBE non servire... se da line() restituisco 0
+      // PROVARE
+      }
+    else {
+      *isDo=0;
+      gotoBlockEnd(mInstance,mInstance->inBlock);
+      mInstance->ndos--;
+      mInstance->inBlock--;
+      }
     
-    // findBlockEnd
-    
-    return -1;    // dovrebbe forzare esecuzione stmt successivo, v. sopra
+    return condition;
     }
 
 	}
@@ -2425,7 +2731,7 @@ LINE_NUMBER_TYPE doIterate(KOMMISSARREXX *mInstance) {
   
   match(mInstance,ITERATE);
 	if(mInstance->ndos>0) {
-    return mInstance->doStack[mInstance->ndos].nextline;
+    return mInstance->doStack[mInstance->ndos-1].nextline;
     }
   else
     setError(mInstance,ERR_NOFOR);
@@ -2437,7 +2743,9 @@ LINE_NUMBER_TYPE doLeave(KOMMISSARREXX *mInstance) {
   match(mInstance,LEAVE);
 	if(mInstance->ndos>0) {
     
-    n=findBlockEnd(mInstance,mInstance->inBlock);
+    n=gotoBlockEnd(mInstance,mInstance->inBlock);
+  	mInstance->ndos--;
+    mInstance->inBlock--;
     
     return n;
     }
@@ -2448,7 +2756,7 @@ LINE_NUMBER_TYPE doLeave(KOMMISSARREXX *mInstance) {
 LINE_NUMBER_TYPE doCall(KOMMISSARREXX *mInstance) {
   LINE_NUMBER_TYPE toline;
   TOKEN_NUM t;
-  char *str=NULL;
+  char *str=NULL,buf[128],*p;
   LINE_NUMBER_TYPE retVal;
 
   match(mInstance,CALL);
@@ -2498,7 +2806,13 @@ LINE_NUMBER_TYPE doCall(KOMMISSARREXX *mInstance) {
         setError(mInstance,ERR_TOOMANYGOSUB);
         retVal=-1;
         }
-      mInstance->gosubStack[mInstance->ngosubs++].returnline = getNextStatement(mInstance,mInstance->string);
+      strncpy(buf, skipSpaces(mInstance->string),sizeof(buf)-1);
+      buf[sizeof(buf)-1]=0;
+      if(p=strchr(buf,'\n'))
+        *p=0;
+      mInstance->gosubStack[mInstance->ngosubs].args = mystrdup(mInstance,buf);
+      mInstance->gosubStack[mInstance->ngosubs].returnline = getNextStatement(mInstance,mInstance->string);
+      mInstance->ngosubs++;
       retVal=toline;
       break;
     }
@@ -2511,6 +2825,7 @@ LINE_NUMBER_TYPE doCall(KOMMISSARREXX *mInstance) {
 LINE_NUMBER_TYPE doReturn(KOMMISSARREXX *mInstance) {
   TOKEN_NUM t;
   const char *str,*theReturn="RETURN";
+  int i,j;
 
   match(mInstance,RETURN);
   if(mInstance->ngosubs <= 0) {
@@ -2522,9 +2837,10 @@ LINE_NUMBER_TYPE doReturn(KOMMISSARREXX *mInstance) {
     VARIABLESTRING *var;
     LVARIABLE v;
     
-    var = findVariable(mInstance,theReturn);
+    var = findVariable(mInstance,theReturn,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+            mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
 		if(!var)
-			var = addVar(mInstance,theReturn);
+			var = addVar(mInstance,theReturn,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
     if(!var) {
       setError(mInstance,ERR_OUTOFMEMORY);
       return;
@@ -2549,10 +2865,30 @@ LINE_NUMBER_TYPE doReturn(KOMMISSARREXX *mInstance) {
       }
     }
   else {
-    deleteVariable(mInstance,theReturn);
+    deleteVariable(mInstance,theReturn,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
     }
   
-  return mInstance->gosubStack[--mInstance->ngosubs].returnline;
+  mInstance->ngosubs--;
+
+  if(mInstance->gosubStack[mInstance->ngosubs].args)
+    free((void *)mInstance->gosubStack[mInstance->ngosubs].args);
+  
+  if(mInstance->gosubStack[mInstance->ngosubs].privateVars) {
+rifo:
+    for(i=0; i<mInstance->nvariables; i++) {
+      if(mInstance->variables[i].parent == (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs].line) {
+        if(mInstance->variables[i].sval)
+          free(mInstance->variables[i].sval);
+        for(j=i+1; j<mInstance->nvariables; j++,i++) {
+          mInstance->variables[i] = mInstance->variables[j];
+          }
+        mInstance->nvariables--;
+        goto rifo;
+        }
+      }
+    }
+
+  return mInstance->gosubStack[mInstance->ngosubs].returnline;
 	}
 
 
@@ -2638,39 +2974,41 @@ set_var:
         toval = to_int(str);
         free((void*)str);
         }
-      initval = 0;
+      initval = 1;
       stepval = 1;
 dummy_var:
-      sprintf(id,"_DO%%%u",mInstance->curline);
-      v=findVariable(mInstance,id);
+      sprintf(id,"#DO%%%u",mInstance->curline);
+      v=findVariable(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
       if(!v)
-        v = addVar(mInstance,id);
+        v = addVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
       v->sval=mystrdupint(mInstance,initval);
       goto set_var;
       break;
     case WHILE:
       match(mInstance,WHILE);
-      toval = 0; //boolExpr(mInstance) ? 1 : 0;    // truschino per eseguire! v.sotto MMMM NO OVVIAMENTE non va..
-      // bisogna tornare ad eseguire la boolEpr da END...
-      initval = 0;
-      stepval = 0;
-      *mInstance->doStack[mInstance->ndos].id=0;
       exprPos=(const char *)mInstance->string;
-//      goto dummy_var;
+      if(boolExpr(mInstance)) {   // qua, PRIMA!
+        toval = 0;
+        stepval = 0;    // marker di WHILE
+        *mInstance->doStack[mInstance->ndos].id=0;
+        goto dummy_var;
+        }
+      else {
+        gotoBlockEnd(mInstance,mInstance->inBlock);
+        }
       break;
     case UNTIL:
       match(mInstance,UNTIL);
-      toval = 0; //boolExpr(mInstance) ? 1 : 0;    // idem
-      initval = 0;
-      stepval = 0;
-      *mInstance->doStack[mInstance->ndos].id=0;
       exprPos=(const char *)mInstance->string;
-//      goto dummy_var;
+      toval = 0;
+      stepval = 1;    // marker di UNTIL
+      *mInstance->doStack[mInstance->ndos].id=0;
+      goto dummy_var;
       break;
     case FOREVER:
       match(mInstance,FOREVER);
       toval = 1;
-      initval = 0;
       stepval = 0;
       goto dummy_var;
   		break;
@@ -2678,8 +3016,10 @@ dummy_var:
 /*  		stepval = 1;
     	toval = 1;
       goto dummy_var;*/
-      toval = initval = stepval = 0;
-      *mInstance->doStack[mInstance->ndos].id=0;
+//      toval = initval = stepval = 0;
+//      *mInstance->doStack[mInstance->ndos].id=0;
+  		setError(mInstance,ERR_SYNTAX);
+      return;
       break;
 		}
 
@@ -2702,36 +3042,61 @@ dummy_var:
 LINE_NUMBER_TYPE doEnd(KOMMISSARREXX *mInstance) {
   int t;
   VARIABLESTRING *var;
-  char buf[8];
+
 
   match(mInstance,END);
 
-  
 	if(mInstance->ndos>0) {
     mInstance->ndos--;
     if(mInstance->doStack[mInstance->ndos].expr) {    // while, until
-      
-      }
-    else if(mInstance->doStack[mInstance->ndos].id) { // for..to, forever
-      var = findVariable(mInstance,mInstance->doStack[mInstance->ndos].id);
-  /*			if(!var) {		// IMPOSSIBILE!
-      setError(mInstance,ERR_OUTOFMEMORY);
-      return 0;
-      }*/
-      t = to_int(var->sval);
-      t += mInstance->doStack[mInstance->ndos].step;
-      free(var->sval);
-      var->sval=mystrdupint(mInstance,t);
-      if( (mInstance->doStack[mInstance->ndos].step < 0 && t < mInstance->doStack[mInstance->ndos].toval) ||
-        (mInstance->doStack[mInstance->ndos].step > 0 && t > mInstance->doStack[mInstance->ndos].toval)) {
-
-        // CANCELLARE la variabile se era una dummy? v. sopra
-
-        mInstance->ndos--;
+      const char *oldPos=mInstance->string;
+      t=boolExpr(mInstance);
+      mInstance->string=oldPos;
+      mInstance->token = getToken(mInstance->string);
+      if(mInstance->doStack[mInstance->ndos].step)   // marker
+        t=!t;
+      if(!t) {
+        mInstance->inBlock--;
         return 0;
         }
       else {
         return mInstance->doStack[mInstance->ndos++].nextline;
+        }
+      }
+    else if(*mInstance->doStack[mInstance->ndos].id) { // for..to, forever
+      if(!strnicmp(mInstance->doStack[mInstance->ndos].id,"#SEL%",5)) {
+        if(!mInstance->doStack[mInstance->ndos].toval /*marker per OTHERWISE*/)   // così dice
+          setError(mInstance,ERR_SYNTAX);
+//          mInstance->ndos--;
+        else {
+          if(mInstance->inBlock>0) {
+            mInstance->inBlock--;
+            }
+          }
+        return 0;
+        }
+      else {
+        var = findVariable(mInstance,mInstance->doStack[mInstance->ndos].id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+                mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+    /*			if(!var) {		// IMPOSSIBILE!
+        setError(mInstance,ERR_OUTOFMEMORY);
+        return 0;
+        }*/
+        t = to_int(var->sval);
+        t += mInstance->doStack[mInstance->ndos].step;
+        free(var->sval);
+        var->sval=mystrdupint(mInstance,t);
+        if( (mInstance->doStack[mInstance->ndos].step < 0 && t < mInstance->doStack[mInstance->ndos].toval) ||
+          (mInstance->doStack[mInstance->ndos].step > 0 && t > mInstance->doStack[mInstance->ndos].toval)) {
+
+          // CANCELLARE la variabile se era una dummy? v. sopra
+
+          mInstance->inBlock--;
+          return 0;
+          }
+        else {
+          return mInstance->doStack[mInstance->ndos++].nextline;
+          }
         }
       }
     else {    // do..end generico, oppure SELECT
@@ -2740,16 +3105,20 @@ LINE_NUMBER_TYPE doEnd(KOMMISSARREXX *mInstance) {
     
         mInstance->doStack[mInstance->ndos].parentBlock ;
         
-//    if(!othFound)   // così dice
-//    setError(mInstance,ERR_SYNTAX);
-
+//  match(mInstance,mInstance->token);    // intanto mangio EOL o EOS...
+//  mInstance->curline++;
+        
+        return 0;
     
     		}
+      else    // NON deve succedere
+        ;
   		}
+    
     }
   else {
     
-    //ANCHE per CALL/RETURN :)
+    //ANCHE per CALL/RETURN :)  eh??
     
     setError(mInstance,ERR_NOFOR);
 		return -1;
@@ -3096,9 +3465,10 @@ void lvalue(KOMMISSARREXX *mInstance,LLVALUE *lv) {
     case STRID:
 			getId(mInstance,mInstance->string, name, &len);
 			match(mInstance,STRID);
-			var = findVariable(mInstance,name);
+			var = findVariable(mInstance,name,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
 			if(!var)
-				var = addVar(mInstance,name);
+				var = addVar(mInstance,name,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
   		if(!var) {
 				setError(mInstance,ERR_OUTOFMEMORY);
 				return;
@@ -3110,7 +3480,8 @@ void lvalue(KOMMISSARREXX *mInstance,LLVALUE *lv) {
 			type = STRID;
 			getId(mInstance,mInstance->string, name, &len);
 			match(mInstance,mInstance->token);
-			dimvar = findDimVar(mInstance,name);
+			dimvar = findDimVar(mInstance,name,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
 			if(dimvar) {
 				switch(dimvar->ndims)	{
 					case 1:
@@ -3231,7 +3602,10 @@ signed char boolFactor(KOMMISSARREXX *mInstance) {
 				free(right);
 			  }
 		  else {
-				answer= rop(op,to_num(left),to_num(right));
+        if(datatype(left) == INTID && datatype(right) == INTID)
+    			answer= rop(op,to_int(left),to_int(right));
+        else
+    			answer= rop(op,to_num(left),to_num(right));
 //		    left = expr(mInstance);
 //v. minibasic...				answer=left;
 				}
@@ -3431,14 +3805,22 @@ concat_string:
         if(right) {
           if(datatype(left) == STRID || datatype(right) == STRID) {
             left=realloc(left,strlen(left)+strlen(right)+1);
+  //myStrConcat()
             strcat(left,right);
             }
           else {
             LNUM_TYPE n;
-            char buf[digitSize];
-            n=to_num(left)+to_num(right);
+            int16_t n1;
+            char buf[digitSize+1];
+            if(datatype(left) == INTID || datatype(right) == INTID) {
+              n1=to_int(left)+to_int(right);
+              to_string_i(n1,buf);
+              }
+            else {
+              n=to_num(left)+to_num(right);
+              to_string(n,buf);
+              }
             free(left);
-            to_string(n,buf);
             left=mystrdup(mInstance,buf);   // lascio... per conversione giusta in to_string
             }
           free(right);
@@ -3455,7 +3837,7 @@ concat_string:
             }
           else {
             LNUM_TYPE n;
-            char buf[digitSize];
+            char buf[digitSize+1];
             n=to_num(left)+to_num(right);
             free(left);
             to_string(n,buf);
@@ -3474,7 +3856,7 @@ concat_string:
 					right = term(mInstance);		//Get Value Data
           if(right) {
             signed char n;
-            char buf[digitSize];
+            char buf[digitSize+1];
             if(datatype(left) == STRID || datatype(right) == STRID) {
     					n=strRop(op,left,right);
               }
@@ -3503,7 +3885,7 @@ char *term(KOMMISSARREXX *mInstance) {
   char *left,*right;
   LNUM_TYPE n;
   int16_t n1;
-  char buf[digitSize];
+  char buf[digitSize+1];
 
   left = factor(mInstance);
   
@@ -3608,7 +3990,7 @@ char *factor(KOMMISSARREXX *mInstance) {
   char *temp,*temp2,*temp3;
   LNUM_TYPE n;
   int16_t n1;
-  char buf[digitSize];
+  char buf[digitSize+1];
   char *end;		// NO const
 	int t,t1;
   IDENT_LEN len;
@@ -3986,12 +4368,18 @@ rand_1:
           answer=NULL;
           }
         else {
+          char buf2[128],*p;
+          
           printf("found function STRID: %s\r\n",id);
       // secondo il doc, se c'è una funzione chiamata "tra apici" allora va invocata SEMPRE la funzione interna...
       // v. function 
           
+          strncpy(buf2, skipSpaces(mInstance->string),sizeof(buf2)-1);
+          buf2[sizeof(buf2)-1]=0;
+          if(p=strchr(buf2,'\n'))
+            *p=0;
+          mInstance->gosubStack[mInstance->ngosubs].args = mystrdup(mInstance,buf2);
           mInstance->gosubStack[mInstance->ngosubs].returnline = getNextStatement(mInstance,mInstance->string);
-          mInstance->gosubStack[mInstance->ngosubs].args = mInstance->string;
           mInstance->ngosubs++;
           answer=mystrdupint(mInstance,toline);
 
@@ -4006,7 +4394,7 @@ rand_1:
         mInstance->string=oldpos;
         mInstance->token = getToken(mInstance->string);
         answer = mystrdup(mInstance,stringVar(mInstance));
-        match(mInstance,STRID);
+//        match(mInstance,STRID);
         }
       }
 
@@ -4197,7 +4585,9 @@ rand_1:
         if(!t)    //  @, _, !, ., ?, and $
           answer=mystrdup(mInstance,"BAD");
         else
-          answer=findVariable(mInstance,temp) ? mystrdup(mInstance,"VAR") : mystrdup(mInstance,"LIT");
+          answer=findVariable(mInstance,temp,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+                  mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0)
+                  ? mystrdup(mInstance,"VAR") : mystrdup(mInstance,"LIT");
 				free(temp);
 	  		}
 			else
@@ -4647,7 +5037,8 @@ const char *getVariable(KOMMISSARREXX *mInstance) {
   
   getId(mInstance,mInstance->string, id, &len);
   match(mInstance,STRID);// son tutte così qua! fa lo stesso... spero
-  var = findVariable(mInstance,id);
+  var = findVariable(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+          mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
   if(var) {
     temp=mystrdup(mInstance,var->sval);
     return temp;
@@ -4700,7 +5091,8 @@ LNUM_TYPE dimVariable(KOMMISSARREXX *mInstance) {
 
   getId(mInstance,mInstance->string, id, &len);
   match(mInstance,DOT);
-  dimvar = findDimVar(mInstance,id);
+  dimvar = findDimVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
   if(!dimvar) {
     setError(mInstance,ERR_NOSUCHVARIABLE);
 		return 0.0;
@@ -4761,23 +5153,40 @@ LNUM_TYPE dimVariable(KOMMISSARREXX *mInstance) {
 	}
 
 
-VARIABLESTRING *findVariable(KOMMISSARREXX *mInstance,const char *id) {
+VARIABLESTRING *findVariable(KOMMISSARREXX *mInstance,const char *id,void *parent,BYTE privateVars) {
   int i;
 
+  if(parent) {
+    for(i=0; i<mInstance->nvariables; i++) {
+      if(mInstance->variables[i].parent == parent && !stricmp(mInstance->variables[i].id, id))
+        return &mInstance->variables[i];
+      }
+    }
+  if(privateVars)
+    return NULL;
   for(i=0; i<mInstance->nvariables; i++) {
-		if(!stricmp(mInstance->variables[i].id, id))
-			return &mInstance->variables[i];
+    if(!stricmp(mInstance->variables[i].id, id))
+      return &mInstance->variables[i];
     }
   return NULL;
 	}
 
 
-LDIMVARSTRING *findDimVar(KOMMISSARREXX *mInstance,const char *id) {
+LDIMVARSTRING *findDimVar(KOMMISSARREXX *mInstance,const char *id,void *parent,BYTE privateVars) {
   int i;
 
-  for(i=0; i<mInstance->ndimVariables; i++)
+  if(parent) {
+    for(i=0; i<mInstance->ndimVariables; i++) {
+      if(mInstance->dimVariables[i].parent==parent && !stricmp(mInstance->dimVariables[i].id, id))
+        return &mInstance->dimVariables[i];
+      }
+    }
+  if(privateVars)
+    return NULL;
+  for(i=0; i<mInstance->ndimVariables; i++) {
 		if(!stricmp(mInstance->dimVariables[i].id, id))
 			return &mInstance->dimVariables[i];
+    }
   return 0;
 	}
 
@@ -4788,7 +5197,7 @@ LDIMVARSTRING *findDimVar(KOMMISSARREXX *mInstance,const char *id) {
           ndims - number of dimension (1-5)
 		  ... - integers giving dimension size, 
 */
-LDIMVARSTRING *dimension(KOMMISSARREXX *mInstance,const char *id, int ndims, ...) {
+LDIMVARSTRING *dimension(KOMMISSARREXX *mInstance,const char *id, BYTE ndims, ...) {
   LDIMVARSTRING *dv;
   va_list vargs;
   int size = 1;
@@ -4803,9 +5212,10 @@ LDIMVARSTRING *dimension(KOMMISSARREXX *mInstance,const char *id, int ndims, ...
   if(ndims > MAXDIMS)
 		return 0;
 
-  dv = findDimVar(mInstance,id);
+  dv = findDimVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
   if(!dv)
-		dv = addDimVar(mInstance,id);
+		dv = addDimVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
   if(!dv) {
     setError(mInstance,ERR_OUTOFMEMORY);
 		return 0;
@@ -4920,7 +5330,7 @@ void *getDimVar(KOMMISSARREXX *mInstance, LDIMVARSTRING *dv, ...) {
 /*
   ------------------
 */
-VARIABLESTRING *addNewVar(KOMMISSARREXX *mInstance,const char *id) {
+VARIABLESTRING *addNewVar(KOMMISSARREXX *mInstance,const char *id,void *parent) {
   VARIABLESTRING *vars;
 
   vars = (VARIABLESTRING *)realloc(mInstance->variables, (mInstance->nvariables + 1) * 
@@ -4929,6 +5339,7 @@ VARIABLESTRING *addNewVar(KOMMISSARREXX *mInstance,const char *id) {
 		mInstance->variables = vars;
     strncpy(mInstance->variables[mInstance->nvariables].id, id, IDLENGTH-1);
 		mInstance->variables[mInstance->nvariables].sval = NULL;		// clears 
+		mInstance->variables[mInstance->nvariables].parent = parent;    // metterci proc/function se locali
 		mInstance->nvariables++;
 		return &mInstance->variables[mInstance->nvariables-1];
 	  }
@@ -4938,14 +5349,25 @@ VARIABLESTRING *addNewVar(KOMMISSARREXX *mInstance,const char *id) {
 		}
 	}
 
-VARIABLESTRING *addVar(KOMMISSARREXX *mInstance,const char *id) {
-  VARIABLESTRING *v = addNewVar(mInstance,id);
+VARIABLESTRING *addVar(KOMMISSARREXX *mInstance,const char *id,void *parent) {
+  VARIABLESTRING *v = addNewVar(mInstance,id,parent);
+
+  switch(mInstance->traceLevel) {
+    case 'A':
+      err_printf("%svariable created %s\r\n",parent ? "-" : "",id);    // finire..
+      break;
+    case '?':
+      inputKey();
+      break;
+    default:
+      break;
+    }
 
   return v; 
 	}
 
 
-LDIMVARSTRING *addDimVar(KOMMISSARREXX *mInstance,const char *id) {
+LDIMVARSTRING *addDimVar(KOMMISSARREXX *mInstance,const char *id,void *parent) {
   LDIMVARSTRING *vars;
 
   vars = (LDIMVARSTRING *)realloc(mInstance->dimVariables, (mInstance->ndimVariables + 1) * sizeof(LDIMVAR));
@@ -4954,6 +5376,7 @@ LDIMVARSTRING *addDimVar(KOMMISSARREXX *mInstance,const char *id) {
 		strcpy(mInstance->dimVariables[mInstance->ndimVariables].id, id);
 		mInstance->dimVariables[mInstance->ndimVariables].str = NULL;
 		mInstance->dimVariables[mInstance->ndimVariables].ndims = 0;
+		mInstance->dimVariables[mInstance->ndimVariables].parent = parent;
 		mInstance->ndimVariables++;
 		return &mInstance->dimVariables[mInstance->ndimVariables-1];
 	  }
@@ -5417,6 +5840,8 @@ add_char:
       }
     args++;
     }
+	if(w>n)		// non esiste l'arg richiesto, ergo pulisco il buffer
+    p1=ret;
   if(p1)
     *p1=0;
   
@@ -5446,7 +5871,7 @@ fine:
 	}
 
 char *argString(KOMMISSARREXX *mInstance) {
-  char *answer,buf[32],*str=NULL,*str2=NULL;
+  char *answer,buf[32],*str=NULL,*str2=NULL,*args;
   BYTE argnum,i;
 
   match(mInstance,ARG);
@@ -5460,9 +5885,19 @@ char *argString(KOMMISSARREXX *mInstance) {
     match(mInstance,CPAREN);
     }
 
+  if(mInstance->ngosubs>0) {
+    if(mInstance->gosubStack[mInstance->ngosubs-1].args) {
+      args=(char *)mInstance->gosubStack[mInstance->ngosubs-1].args;
+      }
+    else
+      args=(char *)EmptyString;
+    }
+  else
+    args=scriptArgs;
+  
   if(!str && !str2) {
 q_arg:
-    answer = mystrdupint(mInstance,get_args(scriptArgs,255,NULL));
+    answer = mystrdupint(mInstance,get_args(args,255,NULL));
     }
   else {
     argnum=to_int(str);
@@ -5470,11 +5905,11 @@ q_arg:
       goto q_arg;     // non c'è ma direi di sì!
     if(!str2) {
       *buf=0;
-      get_args(scriptArgs,argnum,buf);
+      get_args(args,argnum,buf);
       answer = mystrdup(mInstance,buf);
       }
     else {
-      get_args(scriptArgs,argnum,buf);
+      get_args(args,argnum,buf);
       if(toupper(*str2) == 'E')
         i=*buf ? 1 : 0;
       else
@@ -5834,6 +6269,7 @@ char *addressString(KOMMISSARREXX *mInstance) {
       break;
     case 'I':
       //bah controllare m_stdin
+      // usare deviceNames[]
       sprintf(buf,"INPUT NORMAL");
       break;
     case 'O':
@@ -6590,7 +7026,8 @@ char *stringDimVar(KOMMISSARREXX *mInstance) {
 
   getId(mInstance,mInstance->string, id, &len);
   match(mInstance,DIMSTRID);
-  dimvar = findDimVar(mInstance,id);
+  dimvar = findDimVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
+              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
 #if 0
   if(dimvar) {
     switch(dimvar->ndims) {
@@ -7029,7 +7466,7 @@ static const char *mystrend(const char *str, char quote) {
 	}
 
 
-static unsigned int myStrCount(const char *str, char ch) {
+unsigned int myStrCount(const char *str, char ch) {
   unsigned int answer=0;
 
   while(*str) {
@@ -7040,7 +7477,7 @@ static unsigned int myStrCount(const char *str, char ch) {
   return answer;
 	}
 
-static char *myStrConcat(const char *str, const char *cat) {
+char *myStrConcat(const char *str, const char *cat) {
   int len;
   char *answer;
 
@@ -7164,9 +7601,10 @@ char *mystrdupint(KOMMISSARREXX *mInstance,int16_t t) {
 
 char *mystrdupnum(KOMMISSARREXX *mInstance,LNUM_TYPE n) {
   char *p;
-  char buf[20];
+  char buf[digitSize+1];
   
-  sprintf(buf,"%lf",n);
+//  sprintf(buf,"%lf",n);
+  ldtoa(n,buf,digitSizeDecimal);
   p=strdup(buf);
   if(!p)
 		setError(mInstance,ERR_OUTOFMEMORY);

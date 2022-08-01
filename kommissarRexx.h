@@ -28,7 +28,7 @@ typedef union __attribute((packed)) {
   int16_t  ival;	        /* its value if an int */
 	} LVARIABLEDATA;
 
-typedef struct __attribute((packed)) {
+typedef struct __attribute((packed)) _LVARIABLE {
   LVARIABLEDATA d;               /* data in variable */
   char id[IDLENGTH];				/* id of variable */
 //#warning fatto IDLEN a 31 e type uint8 !
@@ -37,8 +37,9 @@ typedef struct __attribute((packed)) {
 	} LVARIABLE;
 STATIC_ASSERT(!(sizeof(LVARIABLE) % 4),0);
 
-typedef struct __attribute((packed)) {
+typedef struct __attribute((packed)) _VARIABLESTRING {
   char *sval;                   /* its value if a string (malloc'ed) */
+  void *parent;             // ci metto il numero di linea della proc padre...
   char id[IDLENGTH];				/* id of variable */
   uint8_t filler;           // alignment..
 	} VARIABLESTRING;
@@ -60,6 +61,7 @@ typedef struct __attribute((packed)) {
 typedef struct __attribute((packed)) {
   char id[IDLENGTH];			/* id of dimensioned variable */
   uint8_t  ndims;			/* number of dimensions */
+  void *parent;             // ci metto il numero di linea della proc padre...
   DIM_SIZE dim[MAXDIMS];			/* dimensions in x y order */
   LDIMVARPTR     d;              /* pointers to string/real data */
   char **str;                   /* its value if a string (malloc'ed) */
@@ -87,7 +89,9 @@ typedef struct __attribute((packed)) {
 
 typedef struct __attribute((packed)) {
   const char *args;
+  LINE_NUMBER_TYPE line;	/* line usato come identificatore di subroutine/funzione */
   LINE_NUMBER_TYPE returnline;	/* line after CALL/() */
+  uint8_t privateVars;          // 1 se PROCEDURE (e poi serve lista di EXPOSEd...)
 	} PROC_DESCRIPTOR;
 
 typedef struct __attribute((packed)) _STACK_QUEUE {
