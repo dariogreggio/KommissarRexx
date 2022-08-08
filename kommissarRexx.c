@@ -8,6 +8,7 @@
 *
  * la EmptyString potrebbe non servire più qua...
  * uno statement (tipo = al posto di ==) in IF o WHEN schianta
+ * finire matrici, finire funzioni
  * 
 *****************************************************************/
 
@@ -39,7 +40,7 @@
 #include "superfile.h"
 
 extern APP_DATA appData;
-#define KOMMISSARREXX_COPYRIGHT_STRING "KommissarRexx for PIC32MZ v0.1.4 - 1/8/2022\n"
+#define KOMMISSARREXX_COPYRIGHT_STRING "KommissarRexx for PIC32MZ v0.1.6 - 8/8/2022\n"
 extern const char _PC_PIC_CPU_C[];
 extern const char _PC_PIC_COMMAND_C[];
 
@@ -585,25 +586,29 @@ BSTATIC char *term(KOMMISSARREXX *);
 BSTATIC char *factor(KOMMISSARREXX *);
 BSTATIC LNUM_TYPE variable(KOMMISSARREXX *);
 BSTATIC int16_t ivariable(KOMMISSARREXX *);
+BSTATIC const char *getVariable(KOMMISSARREXX *);
 BSTATIC LNUM_TYPE dimVariable(KOMMISSARREXX *);
+BSTATIC LNUM_TYPE dimVariable(KOMMISSARREXX *);
+BSTATIC int16_t dimivariable(KOMMISSARREXX *);
+BSTATIC const char *getDimVariable(KOMMISSARREXX *);
 
 
-BSTATIC VARIABLESTRING *findVariable(KOMMISSARREXX *,const char *id,void *parent,BYTE private);
-BSTATIC LDIMVARSTRING *findDimVar(KOMMISSARREXX *,const char *id,void *parent,BYTE private);
+BSTATIC VARIABLESTRING *findVariable(KOMMISSARREXX *,const char *id,PROC_DESCRIPTOR *);
+BSTATIC LDIMVARSTRING *findDimVar(KOMMISSARREXX *,const char *id,PROC_DESCRIPTOR *);
 BSTATIC LDIMVARSTRING *dimension(KOMMISSARREXX *,const char *id, BYTE ndims, ...);
 BSTATIC void *getDimVar(KOMMISSARREXX *,LDIMVARSTRING *dv, ...);
 BSTATIC VARIABLESTRING *addVar(KOMMISSARREXX *,const char *id,void *parent);
 BSTATIC LDIMVARSTRING *addDimVar(KOMMISSARREXX *,const char *id,void *parent);
 
-enum DATATYPE datatype(const char *);
+BSTATIC enum DATATYPE datatype(const char *);
 signed char isString(TOKEN_NUM);
 char *mystrdup(KOMMISSARREXX *,const char *);
 char *mystrdupint(KOMMISSARREXX *,int16_t);
 char *mystrdupnum(KOMMISSARREXX *,LNUM_TYPE);
 long double strtold(const char *string, char **endPtr);
 void ldtoa(long double n, char* res, BYTE afterpoint);
-BYTE isvalidrexx(char);
-BYTE isvalidrexx2(char);
+BSTATIC BYTE isvalidrexx(char);
+BSTATIC BYTE isvalidrexx2(char);
 
 // diciamo che sarebbero tutte CONST , volendo..
 BSTATIC char *leftString(KOMMISSARREXX *);
@@ -668,8 +673,8 @@ BSTATIC char *writeln(KOMMISSARREXX *);
 #endif
 BSTATIC char *addressString(KOMMISSARREXX *);
 BSTATIC char *verString(KOMMISSARREXX *);
-BSTATIC char *stringDimVar(KOMMISSARREXX *);
 BSTATIC const char *stringVar(KOMMISSARREXX *);
+BSTATIC const char *stringDimVar(KOMMISSARREXX *);
 BSTATIC char *stringLiteral(KOMMISSARREXX *);
 BSTATIC char *dirString(KOMMISSARREXX *);
 
@@ -1064,6 +1069,7 @@ int rexx(KOMMISSARREXX *mInstance,const char *script,const char *args,BYTE where
           err_printf("%c",*p++);    // si potrebbero evitare i commenti?
         err_printf("\r\n");
         err_printf("--%u\r\n",mInstance->inBlock);
+        // o mandare sulla seriale?? ridirigere tutto stderr?
       }
         break;
       case '?':
@@ -1272,17 +1278,17 @@ void cleanup(KOMMISSARREXX *mInstance,uint8_t alsoprogram) {
   mInstance->nvariables = 0;
 
   for(i=0; i<mInstance->ndimVariables; i++) {
-    if(mInstance->dimVariables[i].d.str) {
+    if(mInstance->dimVariables[i].sval) {
       size = 1;
       for(ii=0; ii<mInstance->dimVariables[i].ndims; ii++)
         size *= mInstance->dimVariables[i].dim[ii];
       for(ii=0; ii<size; ii++) {
-        if(mInstance->dimVariables[i].d.str[ii])
-          free(mInstance->dimVariables[i].d.str[ii]);
-        mInstance->dimVariables[i].d.str[ii]=0;
+        if(mInstance->dimVariables[i].sval[ii])
+          free(mInstance->dimVariables[i].sval[ii]);
+        mInstance->dimVariables[i].sval[ii]=0;
         }
-      free(mInstance->dimVariables[i].d.str);
-      mInstance->dimVariables[i].d.str=0;
+      free(mInstance->dimVariables[i].sval);
+      mInstance->dimVariables[i].sval=0;
 			}
   	}
 
@@ -1445,6 +1451,7 @@ LINE_NUMBER_TYPE line(KOMMISSARREXX *mInstance) {
 
 rifo:
 	answer = 0;
+
   switch(mInstance->token) {
     case SAY:
 		  doSay(mInstance);
@@ -2055,8 +2062,7 @@ rifo:
       match(mInstance,VAR);
 			getId(mInstance,mInstance->string, id, &len);
 			match(mInstance,STRID);
-      v1=findVariable(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+      v1=findVariable(mInstance,id,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
       if(v1) {
         strncpy(buf2,v1->sval,sizeof(buf2)-1);
         buf2[sizeof(buf2)-1]=0;
@@ -2325,8 +2331,7 @@ void doAddress(KOMMISSARREXX *mInstance) {
     
     execCmd(str,NULL,NULL /* mettere nome script rexx? */);
     
-    var = findVariable(mInstance,theRC,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-            mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+    var = findVariable(mInstance,theRC,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
 		if(!var)
 			var = addVar(mInstance,theRC,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
     if(!var) {
@@ -2503,7 +2508,11 @@ rifo2:
       break;
     default:
     //eseguire procedure? o comando esterno?? solo se tra apici??
-      if(*mInstance->string=='\'' || *mInstance->string=='"') {
+      if(*(p-1)=='.') {   // 
+        lvalue(mInstance,&lv);
+        goto is_var;
+        }
+      else if(*mInstance->string=='\'' || *mInstance->string=='"') {
         char myBuf[128];
         
         strncpy(myBuf,mInstance->string+1,127);
@@ -2528,6 +2537,7 @@ rifo2:
       break;
     case '=':
       lvalue(mInstance,&lv);
+is_var:      
       match(mInstance,EQUALS);
 
       str=expr(mInstance);
@@ -2546,7 +2556,6 @@ rifo2:
             subAssignVar(mInstance,lv.d.sval,&v);
             break;
           }
-
         free((void *)str);
         break;
       }
@@ -2600,7 +2609,7 @@ rifo:
     goto rifo;
 	}
 
-void doDim(KOMMISSARREXX *mInstance) {
+void subDim(KOMMISSARREXX *mInstance) {
   BYTE ndims=0;
   DIM_SIZE dims[MAXDIMS+1];
   char name[IDLENGTH];
@@ -2608,53 +2617,51 @@ void doDim(KOMMISSARREXX *mInstance) {
   LDIMVARSTRING *dimvar;
   unsigned char i;
   int size = 1;
+  const char *str;
 
-  match(mInstance,DOT);
+  getId(mInstance,mInstance->string, name, &len);
+  match(mInstance,mInstance->token);
+  str=factor(mInstance);
+  if(datatype(str) != INTID) {
+    free((void*)str);
+    return;
+    }
+  dims[ndims++] = to_int(str) +1;
+  while(mInstance->token == DOT) {
+    match(mInstance,DOT);
+    dims[ndims++] = to_int(expr(mInstance)) +1;
+    if(ndims > MAXDIMS)	{
+      setError(mInstance,ERR_TOOMANYDIMS);
+      return;
+      }
+    } 
+  free((void*)str);
 
-  switch(mInstance->token) {
-		case DIMSTRID:
-      getId(mInstance,mInstance->string, name, &len);
-			match(mInstance,mInstance->token);
-			dims[ndims++] = to_int(expr(mInstance));
-			while(mInstance->token == COMMA) {
-				match(mInstance,COMMA);
-				dims[ndims++] = to_int(expr(mInstance));
-				if(ndims > MAXDIMS)	{
-					setError(mInstance,ERR_TOOMANYDIMS);
-					return;
-					}
-				} 
+  for(i=0; i<ndims; i++) {
+    if(dims[i] < 0) {
+      setError(mInstance,ERR_BADSUBSCRIPT);
+      return;
+      }
+    }
 
-		  match(mInstance,CPAREN);
-	  
-			for(i=0; i<ndims; i++) {
-				if(dims[i] < 0) {
-					setError(mInstance,ERR_BADSUBSCRIPT);
-					return;
-				}
-			}
-	  switch(ndims) {
-	    case 1:
-				dimvar = dimension(mInstance,name, 1, dims[0]);
-				break;
-			case 2:
-				dimvar = dimension(mInstance,name, 2, dims[0], dims[1]);
-				break;
-			case 3:
-				dimvar = dimension(mInstance,name, 3, dims[0], dims[1], dims[2]);
-				break;
-			case 4:
-				dimvar = dimension(mInstance,name, 4, dims[0], dims[1], dims[2], dims[3]);
-				break;
-			case 5:
-				dimvar = dimension(mInstance,name, 5, dims[0], dims[1], dims[2], dims[3], dims[4]);
-				break;
-			}
-			break;
-		default:
-	    setError(mInstance,ERR_SYNTAX);
-	    return;
-	  }
+  switch(ndims) {
+    case 1:
+      dimvar = dimension(mInstance,name, 1, dims[0]);
+      break;
+    case 2:
+      dimvar = dimension(mInstance,name, 2, dims[0], dims[1]);
+      break;
+    case 3:
+      dimvar = dimension(mInstance,name, 3, dims[0], dims[1], dims[2]);
+      break;
+    case 4:
+      dimvar = dimension(mInstance,name, 4, dims[0], dims[1], dims[2], dims[3]);
+      break;
+    case 5:
+      dimvar = dimension(mInstance,name, 5, dims[0], dims[1], dims[2], dims[3], dims[4]);
+      break;
+    }
+
   if(dimvar == NULL) {
 	/* out of memory */
 		setError(mInstance,ERR_OUTOFMEMORY);
@@ -2665,32 +2672,9 @@ void doDim(KOMMISSARREXX *mInstance) {
   for(i=0; i<dimvar->ndims; i++)
 		size *= dimvar->dim[i];
   
-  if(mInstance->token == EQUALS) {
-    match(mInstance,EQUALS);
-
-    i=0;
-    if(dimvar->d.str[i])
-      free(dimvar->d.str[i]);
-    dimvar->d.str[i++] = expr(mInstance);
-
-    while(mInstance->token == COMMA && i < size)	{
-      match(mInstance,COMMA);
-      if(dimvar->d.str[i])
-        free(dimvar->d.str[i]);
-      dimvar->d.str[i++] = expr(mInstance);
-      if(mInstance->errorFlag)
-        break;
-      }
-		
-		if(mInstance->token == COMMA)
-			setError(mInstance,ERR_TOOMANYINITS);
-		}
-  
-  else {    // il baciapile non inizializzava a 0... ;) !
-    i=0;
-    while(i < size)
-      dimvar->d.str[i++]=NULL;
-    }
+//  i=0;
+//  while(i < size)
+//    dimvar->sval[i++]=NULL;  // c'è già in dimension mi pare...
 
 	}
 
@@ -2837,8 +2821,7 @@ LINE_NUMBER_TYPE doReturn(KOMMISSARREXX *mInstance) {
     VARIABLESTRING *var;
     LVARIABLE v;
     
-    var = findVariable(mInstance,theReturn,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-            mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+    var = findVariable(mInstance,theReturn,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
 		if(!var)
 			var = addVar(mInstance,theReturn,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
     if(!var) {
@@ -2978,8 +2961,7 @@ set_var:
       stepval = 1;
 dummy_var:
       sprintf(id,"#DO%%%u",mInstance->curline);
-      v=findVariable(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+      v=findVariable(mInstance,id,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
       if(!v)
         v = addVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
       v->sval=mystrdupint(mInstance,initval);
@@ -3076,8 +3058,7 @@ LINE_NUMBER_TYPE doEnd(KOMMISSARREXX *mInstance) {
         return 0;
         }
       else {
-        var = findVariable(mInstance,mInstance->doStack[mInstance->ndos].id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-                mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+        var = findVariable(mInstance,mInstance->doStack[mInstance->ndos].id,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
     /*			if(!var) {		// IMPOSSIBILE!
         setError(mInstance,ERR_OUTOFMEMORY);
         return 0;
@@ -3457,6 +3438,8 @@ void lvalue(KOMMISSARREXX *mInstance,LLVALUE *lv) {
   DIM_SIZE index[MAXDIMS];
   void *valptr = NULL;
   char type;
+  char *oldPos;
+  TOKEN_NUM oldToken;
   
   lv->type = B_ERROR;
   lv->d.dval = 0;		// clears them all
@@ -3465,8 +3448,7 @@ void lvalue(KOMMISSARREXX *mInstance,LLVALUE *lv) {
     case STRID:
 			getId(mInstance,mInstance->string, name, &len);
 			match(mInstance,STRID);
-			var = findVariable(mInstance,name,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+			var = findVariable(mInstance,name,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
 			if(!var)
 				var = addVar(mInstance,name,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
   		if(!var) {
@@ -3478,63 +3460,84 @@ void lvalue(KOMMISSARREXX *mInstance,LLVALUE *lv) {
 			break;
 		case DIMSTRID:
 			type = STRID;
+      oldPos=(char*)mInstance->string;
+      oldToken=mInstance->token;
+rifo_dim:
 			getId(mInstance,mInstance->string, name, &len);
 			match(mInstance,mInstance->token);
-			dimvar = findDimVar(mInstance,name,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+			dimvar = findDimVar(mInstance,name,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
 			if(dimvar) {
 				switch(dimvar->ndims)	{
 					case 1:
-						index[0] = to_int(expr(mInstance));
-						if(!mInstance->errorFlag)
+          {
+            char *str;
+            str=factor(mInstance);
+            if(datatype(str) == INTID) {
+              index[0] = to_int(str);
+              if(dimvar->dim[0] < index[0]+1) {
+//                dimvar->dim[0] = index[0]+1;
+                dimvar = dimension(mInstance,name, 1, index[0]+1);
+//#warning FARE una REDIMENSION che copia anche i contenuti!
+                }
               valptr = getDimVar(mInstance,dimvar, index[0]);
+              }
+						else
+        			setError(mInstance,ERR_BADSUBSCRIPT);
+            free((void*)str);
+            // POI FARE PER TUTTE!
+          }
 						break;
 					case 2:
 						index[0] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
 						index[1] = to_int(expr(mInstance));
 						if(!mInstance->errorFlag)
 							valptr = getDimVar(mInstance,dimvar, index[0], index[1]);
 						break;
 					case 3:
 						index[0] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
 						index[1] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
 						index[2] = to_int(expr(mInstance));
 						if(!mInstance->errorFlag)
 							valptr = getDimVar(mInstance,dimvar, index[0], index[1], index[2]);
 						break;
 				  case 4:
 						index[0] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
 						index[1] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
             index[2] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
 						index[3] = to_int(expr(mInstance));
 						if(!mInstance->errorFlag)
 							valptr = getDimVar(mInstance,dimvar, index[0], index[1], index[2], index[3]);
 						break;
 					case 5:
 						index[0] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
 						index[1] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
 						index[2] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
 						index[3] = to_int(expr(mInstance));
-						match(mInstance,COMMA);
+						match(mInstance,DOT);
 						index[4] = to_int(expr(mInstance));
 						if(!mInstance->errorFlag)
 							valptr = getDimVar(mInstance,dimvar, index[0], index[1], index[2], index[3]);
 						break;
 					}
-				match(mInstance,CPAREN);
 				}
 			else {
-				setError(mInstance,ERR_NOSUCHVARIABLE);
-				return;
+//				setError(mInstance,ERR_NOSUCHVARIABLE);
+//				return;
+        mInstance->string=oldPos;
+        mInstance->token=oldToken;
+        subDim(mInstance);
+        mInstance->string=oldPos;
+        mInstance->token=oldToken;
+        goto rifo_dim;
 				}
       if(valptr) {
         lv->type = type;
@@ -4345,7 +4348,7 @@ rand_1:
       
     case DIMSTRID:
 //			match(mInstance,DIMSTRID);
-			answer = mystrdup(mInstance,stringDimVar(mInstance));
+			answer = mystrdup(mInstance,(char*)stringDimVar(mInstance));
 			break;
     case STRID:   // 
     {
@@ -4393,7 +4396,7 @@ rand_1:
       else {      
         mInstance->string=oldpos;
         mInstance->token = getToken(mInstance->string);
-        answer = mystrdup(mInstance,stringVar(mInstance));
+        answer = mystrdup(mInstance,(char*)stringVar(mInstance));
 //        match(mInstance,STRID);
         }
       }
@@ -4585,8 +4588,7 @@ rand_1:
         if(!t)    //  @, _, !, ., ?, and $
           answer=mystrdup(mInstance,"BAD");
         else
-          answer=findVariable(mInstance,temp,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-                  mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0)
+          answer=findVariable(mInstance,temp,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL)
                   ? mystrdup(mInstance,"VAR") : mystrdup(mInstance,"LIT");
 				free(temp);
 	  		}
@@ -5037,8 +5039,7 @@ const char *getVariable(KOMMISSARREXX *mInstance) {
   
   getId(mInstance,mInstance->string, id, &len);
   match(mInstance,STRID);// son tutte così qua! fa lo stesso... spero
-  var = findVariable(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-          mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+  var = findVariable(mInstance,id,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
   if(var) {
     temp=mystrdup(mInstance,var->sval);
     return temp;
@@ -5078,53 +5079,61 @@ const char *stringVar(KOMMISSARREXX *mInstance) {
 	}
 
 
-/*
-  get value of a dimensioned variable from string.
-  matches DIMFLTID
-*/
-LNUM_TYPE dimVariable(KOMMISSARREXX *mInstance) {
+const char *getDimVariable(KOMMISSARREXX *mInstance) {
   LDIMVARSTRING *dimvar;
   char id[IDLENGTH];
   IDENT_LEN len;
   DIM_SIZE index[MAXDIMS];
-  LNUM_TYPE *answer;
+  char *answer,*temp;
 
   getId(mInstance,mInstance->string, id, &len);
-  match(mInstance,DOT);
-  dimvar = findDimVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+  match(mInstance,DIMSTRID);
+  dimvar = findDimVar(mInstance,id,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
   if(!dimvar) {
-    setError(mInstance,ERR_NOSUCHVARIABLE);
-		return 0.0;
-  	}
-
-  if(dimvar) {
+    answer=strupr(mystrdup(mInstance,id));    // col punto o no? con indice o no?...
+	  }
+  else {
     switch(dimvar->ndims) {
 		  case 1:
-		    index[0] = to_int(expr(mInstance));
-				answer = getDimVar(mInstance,dimvar, index[0]);
+        temp=factor(mInstance);
+        if(datatype(temp) == INTID) {
+          index[0] = to_int(temp);
+          if(dimvar->dim[0] > index[0]) {
+    				answer = getDimVar(mInstance,dimvar, index[0]);
+            if(answer && *answer)
+              answer=*(char **)answer;
+            else
+              answer=strupr(mystrdup(mInstance,id));    // col punto o no? o BOH :D
+            }
+          else
+            answer=strupr(mystrdup(mInstance,id));    // col punto o no? qua con indice?...
+          }
+  			else
+        	setError(mInstance,ERR_BADSUBSCRIPT);
+        free((void*)temp);
 				break;
       case 2:
+        // finire!
 				index[0] = to_int(expr(mInstance));
-				match(mInstance,COMMA);
+				match(mInstance,DOT);
 				index[1] = to_int(expr(mInstance));
 				answer = getDimVar(mInstance,dimvar, index[0], index[1]);
 				break;
 		  case 3:
 				index[0] = to_int(expr(mInstance));
-				match(mInstance,COMMA);
+				match(mInstance,DOT);
 				index[1] = to_int(expr(mInstance));
-				match(mInstance,COMMA);
+				match(mInstance,DOT);
 				index[2] = to_int(expr(mInstance));
 				answer = getDimVar(mInstance,dimvar, index[0], index[1], index[2]);
 				break;
 		  case 4:
 				index[0] = to_int(expr(mInstance));
-				match(mInstance,COMMA);
+				match(mInstance,DOT);
 				index[1] = to_int(expr(mInstance));
-				match(mInstance,COMMA);
+				match(mInstance,DOT);
 				index[2] = to_int(expr(mInstance));
-				match(mInstance,COMMA);
+				match(mInstance,DOT);
 				index[3] = to_int(expr(mInstance));
 				answer = getDimVar(mInstance,dimvar, index[0], index[1], index[2], index[3]);
 				break;
@@ -5142,27 +5151,50 @@ LNUM_TYPE dimVariable(KOMMISSARREXX *mInstance) {
 				break;
 			}
 
-		match(mInstance,CPAREN);
   	}
 
-  if(answer)
-		return *answer;
+  return answer;
+	}
 
-  return 0.0;
+const char *stringDimVar(KOMMISSARREXX *mInstance) {
+  const char **s;
+  
+  s=getDimVariable(mInstance);
+  return s;
+	}
 
+LNUM_TYPE dimVariable(KOMMISSARREXX *mInstance) {
+  const char *s;
+  LNUM_TYPE t;
+
+  s=getDimVariable(mInstance);
+  t=strtold(s,NULL);
+  free((void*)s);
+  return t;
+	}
+
+int16_t dimivariable(KOMMISSARREXX *mInstance) {
+  const char *s;
+  int16_t t;
+
+  s=getDimVariable(mInstance);
+  t=to_int(s);
+  free((void*)s);
+  return t;
 	}
 
 
-VARIABLESTRING *findVariable(KOMMISSARREXX *mInstance,const char *id,void *parent,BYTE privateVars) {
+
+VARIABLESTRING *findVariable(KOMMISSARREXX *mInstance,const char *id,PROC_DESCRIPTOR *proc) {
   int i;
 
-  if(parent) {
+  if(proc) {
     for(i=0; i<mInstance->nvariables; i++) {
-      if(mInstance->variables[i].parent == parent && !stricmp(mInstance->variables[i].id, id))
+      if(mInstance->variables[i].parent == (void*)(uint32_t)proc->line && !stricmp(mInstance->variables[i].id, id))
         return &mInstance->variables[i];
       }
     }
-  if(privateVars)
+  if(proc && proc->privateVars)
     return NULL;
   for(i=0; i<mInstance->nvariables; i++) {
     if(!stricmp(mInstance->variables[i].id, id))
@@ -5172,16 +5204,16 @@ VARIABLESTRING *findVariable(KOMMISSARREXX *mInstance,const char *id,void *paren
 	}
 
 
-LDIMVARSTRING *findDimVar(KOMMISSARREXX *mInstance,const char *id,void *parent,BYTE privateVars) {
+LDIMVARSTRING *findDimVar(KOMMISSARREXX *mInstance,const char *id,PROC_DESCRIPTOR *proc) {
   int i;
 
-  if(parent) {
+  if(proc) {
     for(i=0; i<mInstance->ndimVariables; i++) {
-      if(mInstance->dimVariables[i].parent==parent && !stricmp(mInstance->dimVariables[i].id, id))
+      if(mInstance->dimVariables[i].parent == (void*)(uint32_t)proc->line && !stricmp(mInstance->dimVariables[i].id, id))
         return &mInstance->dimVariables[i];
       }
     }
-  if(privateVars)
+  if(proc && proc->privateVars)
     return NULL;
   for(i=0; i<mInstance->ndimVariables; i++) {
 		if(!stricmp(mInstance->dimVariables[i].id, id))
@@ -5210,10 +5242,9 @@ LDIMVARSTRING *dimension(KOMMISSARREXX *mInstance,const char *id, BYTE ndims, ..
 
   basicAssert(ndims <= MAXDIMS);
   if(ndims > MAXDIMS)
-		return 0;
+		return NULL;
 
-  dv = findDimVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
+  dv = findDimVar(mInstance,id,mInstance->ngosubs>0 ? &mInstance->gosubStack[mInstance->ngosubs-1] : NULL);
   if(!dv)
 		dv = addDimVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL);
   if(!dv) {
@@ -5235,27 +5266,23 @@ LDIMVARSTRING *dimension(KOMMISSARREXX *mInstance,const char *id, BYTE ndims, ..
   	}
   va_end(vargs);
 
-  if(dv->str) {
-    for(i=size; i<oldsize; i++)
-      if(dv->str[i]) {
-        free(dv->str[i]);
-        dv->str[i] = 0;
-        }
-    }
-  stemp = (char **)realloc(dv->str, size * sizeof(char *));
+  stemp = (char **)malloc(size * sizeof(char *));
+
+// se cambia il #dimensioni, che fare...?
   if(stemp) {
-    dv->str = stemp;
+    if(dv->sval) {
+      for(i=0; i<oldsize; i++) {
+        stemp[i]=dv->sval[i];
+        }
+      free(dv->sval);
+      }
+    dv->sval = stemp;
     for(i=oldsize; i<size; i++)
-      dv->str[i] = 0;
+      dv->sval[i] = NULL;
     }
   else {
-    for(i=0; i<oldsize; i++)
-      if(dv->str[i]) {
-        free(dv->str[i]);
-        dv->str[i] = 0;
-        }
     setError(mInstance,ERR_OUTOFMEMORY);
-    return 0;
+    return NULL;
     }
 
   for(i=0; i<MAXDIMS; i++)
@@ -5277,7 +5304,7 @@ void *getDimVar(KOMMISSARREXX *mInstance, LDIMVARSTRING *dv, ...) {
   va_list vargs;
   DIM_SIZE index[MAXDIMS];
   int i;
-  void *answer = 0;
+  void *answer = NULL;
 
   va_start(vargs, dv);
   for(i=0; i<dv->ndims; i++) {
@@ -5288,7 +5315,7 @@ void *getDimVar(KOMMISSARREXX *mInstance, LDIMVARSTRING *dv, ...) {
   for(i=0; i<dv->ndims; i++) {
     if(index[i] >= dv->dim[i] || index[i] < 0) {
 			setError(mInstance,ERR_BADSUBSCRIPT);
-			return 0;
+			return NULL;
   		}
 		}
 //  for(i=0; i<dv->ndims; i++)  OPTION BASE diciamo, lui partiva da 1, io NO!
@@ -5296,26 +5323,26 @@ void *getDimVar(KOMMISSARREXX *mInstance, LDIMVARSTRING *dv, ...) {
 
   switch(dv->ndims)	{
     case 1:
-      answer = &dv->d.str[ index[0] ]; 
+      answer = &dv->sval[ index[0] ]; 
       break;
     case 2:
-      answer = &dv->d.str[ index[1] * dv->dim[0] 
+      answer = &dv->sval[ index[1] * dv->dim[0] 
         + index[0] ];
       break;
     case 3:
-      answer = &dv->d.str[ index[2] * (dv->dim[0] * dv->dim[1]) 
+      answer = &dv->sval[ index[2] * (dv->dim[0] * dv->dim[1]) 
       + index[1] * dv->dim[0] 
       + index[0] ];
       break;
     case 4:
-      answer = &dv->d.str[ index[3] * (dv->dim[0] + dv->dim[1] + dv->dim[2]) 
+      answer = &dv->sval[ index[3] * (dv->dim[0] + dv->dim[1] + dv->dim[2]) 
         + index[2] * (dv->dim[0] * dv->dim[1]) 
         + index[1] * dv->dim[0] 
         + index[0] ];
       // MANCAva BREAK???
       break;
     case 5:
-      answer = &dv->d.str[ index[4] * (dv->dim[0] + dv->dim[1] + dv->dim[2] + dv->dim[3])
+      answer = &dv->sval[ index[4] * (dv->dim[0] + dv->dim[1] + dv->dim[2] + dv->dim[3])
         + index[3] * (dv->dim[0] + dv->dim[1] + dv->dim[2])
         + index[2] * (dv->dim[0] + dv->dim[1])
         + index[1] * dv->dim[0]
@@ -5374,7 +5401,7 @@ LDIMVARSTRING *addDimVar(KOMMISSARREXX *mInstance,const char *id,void *parent) {
   if(vars) {
     mInstance->dimVariables = vars;
 		strcpy(mInstance->dimVariables[mInstance->ndimVariables].id, id);
-		mInstance->dimVariables[mInstance->ndimVariables].str = NULL;
+		mInstance->dimVariables[mInstance->ndimVariables].sval = NULL;
 		mInstance->dimVariables[mInstance->ndimVariables].ndims = 0;
 		mInstance->dimVariables[mInstance->ndimVariables].parent = parent;
 		mInstance->ndimVariables++;
@@ -5489,7 +5516,7 @@ char *abbrevString(KOMMISSARREXX *mInstance) {
 
 char *timeString(KOMMISSARREXX *mInstance) {
   DWORD ti;
-  char *answer,buf[32],*options=(char*)EmptyString,*time_in,*options_in;
+  char *answer,buf[32],*options=NULL,*time_in=NULL,*options_in=NULL;
   PIC32_DATE date;
   PIC32_TIME time;
   signed char i;
@@ -5508,10 +5535,13 @@ char *timeString(KOMMISSARREXX *mInstance) {
         options_in = expr(mInstance);
         }
       }
-    match(mInstance,CPAREN);
     }
+  match(mInstance,CPAREN);
+
 
   SetTimeFromNow(ti,&date,&time);
+	if(!options)
+		goto case_default;
   switch(*options) {
     case 'C':
       sprintf(buf,"%02u:%02u%cm",
@@ -5539,6 +5569,7 @@ char *timeString(KOMMISSARREXX *mInstance) {
       sprintf(buf,"%02u:%02u:%02u", time.hour,time.min,time.sec);
       break;
     default:
+case_default:
       i=findTimezone();
       sprintf(buf,"%02u:%02u:%02u %c%d",    // timezone idea mia, non c'era :)
         time.hour,time.min,time.sec,
@@ -5557,12 +5588,16 @@ range from 0 to 23.
  S (Seconds)?Returns the number of complete seconds since midnight*/
           
   answer = mystrdup(mInstance,buf);
+
+	free(time_in);
+	free(options_in);
+	free(options);
   return answer;
 	}
 
 char *dateString(KOMMISSARREXX *mInstance) {
   DWORD ti;
-  char *answer,buf[32],*options=(char*)EmptyString,*time_in,*options_in;
+  char *answer,buf[32],*options=NULL,*time_in=NULL,*options_in=NULL;
   PIC32_DATE date;
   PIC32_TIME time;
   signed char i;
@@ -5582,10 +5617,12 @@ char *dateString(KOMMISSARREXX *mInstance) {
         options_in = expr(mInstance);
         }
       }
-    match(mInstance,CPAREN);
     }
+  match(mInstance,CPAREN);
 
   SetTimeFromNow(ti,&date,&time);
+	if(!options)
+		goto case_default;
   switch(*options) {
     case 'B':
       itoa(buf,now / 86400,10);
@@ -5620,6 +5657,7 @@ char *dateString(KOMMISSARREXX *mInstance) {
       break;
     case 'N':
     default:
+case_default:
       sprintf(buf,"%2u %s %04u",date.mday,months[date.mon],date.year);
       break;
     }
@@ -5634,6 +5672,10 @@ U (USA)?Returns the date in American format, mm/dd/yy
 W (Weekday)?Returns the English name for the day of the week, for example: Monday*/
           
   answer = mystrdup(mInstance,buf);
+
+	free(time_in);
+	free(options_in);
+	free(options);
   return answer;
 	}
 
@@ -5882,8 +5924,8 @@ char *argString(KOMMISSARREXX *mInstance) {
       match(mInstance,COMMA);
       str2 = expr(mInstance);
       }
-    match(mInstance,CPAREN);
     }
+  match(mInstance,CPAREN);
 
   if(mInstance->ngosubs>0) {
     if(mInstance->gosubStack[mInstance->ngosubs-1].args) {
@@ -7013,79 +7055,6 @@ char *changeString(KOMMISSARREXX *mInstance) {
 	}
 
 
-/*
-  read a dimensioned string variable from input.
-  Returns: pointer to string (not malloced) 
-*/
-char *stringDimVar(KOMMISSARREXX *mInstance) {
-  char id[IDLENGTH];
-  IDENT_LEN len;
-  LDIMVARSTRING *dimvar;
-  char **answer;
-  DIM_SIZE index[MAXDIMS];
-
-  getId(mInstance,mInstance->string, id, &len);
-  match(mInstance,DIMSTRID);
-  dimvar = findDimVar(mInstance,id,mInstance->ngosubs>0 ? (void*)(uint32_t)mInstance->gosubStack[mInstance->ngosubs-1].line : NULL,
-              mInstance->ngosubs>0 ? mInstance->gosubStack[mInstance->ngosubs-1].privateVars : 0);
-#if 0
-  if(dimvar) {
-    switch(dimvar->ndims) {
-	  	case 1:
-	    	index[0] = expr(mInstance);
-				answer = getDimVar(mInstance,dimvar, index[0]);
-				break;
-      case 2:
-				index[0] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[1] = expr(mInstance);
-				answer = getDimVar(mInstance,dimvar, index[0], index[1]);
-				break;
-		  case 3:
-				index[0] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[1] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[2] = expr(mInstance);
-				answer = getDimVar(mInstance,dimvar, index[0], index[1], index[2]);
-				break;
-		  case 4:
-				index[0] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[1] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[2] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[3] = expr(mInstance);
-				answer = getDimVar(mInstance,dimvar, index[0], index[1], index[2], index[3]);
-				break;
-		  case 5:
-				index[0] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[1] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[2] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[3] = expr(mInstance);
-				match(mInstance,COMMA);
-				index[4] = expr(mInstance);
-				answer = getDimVar(mInstance,dimvar, index[0], index[1], index[2], index[3], index[4]);
-				break;
-			}
-
-		match(mInstance,CPAREN);
-  	}
-  else
-		setError(mInstance,ERR_NOSUCHVARIABLE);
-#endif
-  if(!mInstance->errorFlag)
-		if(*answer)
-	     return *answer;
-	 
-  return (char *)EmptyString;
-	}
-
-
 char *stringLiteral(KOMMISSARREXX *mInstance) {
   int len = 1;
   char *answer = 0;
@@ -7366,7 +7335,7 @@ signed char isString(TOKEN_NUM token) {
 
   if(token == QUOTE)
     return 1;
-  if(token == STRID || token == DIMSTRID )
+  if(token == STRID || token == DIMSTRID)
 		return 1;
   return 0;
 	}

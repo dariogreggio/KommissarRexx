@@ -38,7 +38,7 @@ typedef struct __attribute((packed)) _LVARIABLE {
 STATIC_ASSERT(!(sizeof(LVARIABLE) % 4),0);
 
 typedef struct __attribute((packed)) _VARIABLESTRING {
-  char *sval;                   /* its value if a string (malloc'ed) */
+  char *sval;                   /* its value as a string (malloc'ed) */
   void *parent;             // ci metto il numero di linea della proc padre...
   char id[IDLENGTH];				/* id of variable */
   uint8_t filler;           // alignment..
@@ -54,17 +54,16 @@ typedef struct __attribute((packed)) {
   char id[IDLENGTH];			/* id of dimensioned variable */
   enum DATATYPE type;					/* its type, STRID or FLTID (or INTID)*/
   uint32_t /*uint8_t  ALIGNMENT in alloc dinamica! */  ndims;			/* number of dimensions */
-  DIM_SIZE dim[MAXDIMS];			/* dimensions in x y order */
   LDIMVARPTR     d;              /* pointers to string/real data */
+  DIM_SIZE dim[MAXDIMS];			/* dimensions in x y order */
 	} LDIMVAR;
 
 typedef struct __attribute((packed)) {
   char id[IDLENGTH];			/* id of dimensioned variable */
   uint8_t  ndims;			/* number of dimensions */
   void *parent;             // ci metto il numero di linea della proc padre...
+  char **sval;                   /* (array of) its value as a string (malloc'ed) */
   DIM_SIZE dim[MAXDIMS];			/* dimensions in x y order */
-  LDIMVARPTR     d;              /* pointers to string/real data */
-  char **str;                   /* its value if a string (malloc'ed) */
 	} LDIMVARSTRING;
 
 typedef union __attribute((packed)) {
